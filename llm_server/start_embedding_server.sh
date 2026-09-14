@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+
+# Find llama-server
+LLAMA_SERVER="${LLAMA_SERVER_PATH:-}"
+
+if [ -z "$LLAMA_SERVER" ]; then
+    if command -v llama-server &> /dev/null; then
+        LLAMA_SERVER="llama-server"
+    elif [ -x "/home/prant/llama.cpp/build/bin/llama-server" ]; then
+        LLAMA_SERVER="/home/prant/llama.cpp/build/bin/llama-server"
+    else
+        echo "Error: llama-server not found."
+        echo "Please set LLAMA_SERVER_PATH or install llama.cpp"
+        exit 1
+    fi
+fi
+
+# Find embedding model
+MODEL="${EMBEDDING_MODEL_PATH:-../Embedding model/Qwen3-Embedding-0.6B-Q8_0.gguf}"
+
+if [ ! -f "$MODEL" ]; then
+    echo "Error: Model file not found at $MODEL"
+    exit 1
+fi
+
+echo "Starting Embedding server with model: $MODEL"
+echo "Using llama-server: $LLAMA_SERVER"
+
+$LLAMA_SERVER -m "$MODEL" -ngl 0 --embedding --port 8081

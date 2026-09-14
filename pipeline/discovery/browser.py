@@ -1,0 +1,179 @@
+"""Headless browser PDF download via Playwright + direct HTTP fallback."""
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+from pathlib import Path
+from urllib.parse import urlparse
+
+import httpx
+from playwright.async_api import async_playwright
+
+from pipeline.schema import SearchCandidate
+
+logger = logging.getLogger(__name__)
+
+__version__ = "1.0.0"
+
+
+class ReportDownloader:
+    """Downloads annual report PDFs from candidate URLs.
+
+    For candidates flagged as direct PDF links, a simple ``httpx`` GET is
+    used.  For HTML pages (common on investor-relations sites), a headless
+    Chromium instance renders the page, detects auto-downloads, and clicks
+    PDF links.
+    """
+
+    def __init__(self, download_dir: str = "data/downloads") -> None:
+        self.download_dir = Path(download_dir)
+        self.download_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("Download directory: %s", self.download_dir)
+
+    async def download_from_candidates(
+        self,
+        candidates: list[SearchCandidate],
+        company_name: str,
+    ) -> list[tuple[SearchCandidate, str]]:
+        """Try each candidate in score order, return successful downloads.
+
+        Stops after the first successful download since we normally
+        only need one valid PDF.
+        """
+        results: list[tuple[SearchCandidate, str]] = []
+
+        for candidate in candidates:
+            try:
+                logger.info("Trying candidate: %s", candidate.url)
+                path = await self._try_download(candidate)
+                if path:
+                    logger.info("Downloaded %s → %s", candidate.url, path)
+                    results.append((candidate, path))
+                    break  # one is enough
+            except Exception:
+                logger.exception("Download failed for %s", candidate.url)
+
+        if not results:
+            logger.warning(
+                "No PDFs downloaded from %d candidates", len(candidates)
+            )
+        return results
+
+    async def _try_download(self, candidate: SearchCandidate) -> str | None:
+        if candidate.is_direct_pdf:
+            return await self._try_direct_download(candidate.url)
+        return await self._try_browser_download(candidate.url)
+
+    # ------------------------------------------------------------------
+    # Direct HTTP download
+    # ------------------------------------------------------------------
+
+    async def _try_direct_download(self, url: str) -> str | None:
+        """Download a direct PDF link with httpx."""
+        logger.info("Direct download: %s", url)
+        try:
+            parsed = urlparse(url)
+            filename = os.path.basename(parsed.path)
+            if not filename.lower().endswith(".pdf"):
+                filename = f"report_{abs(hash(url)) % 10**8}.pdf"
+
+            dest = self.download_dir / filename
+
+            async with httpx.AsyncClient(
+                verify=False, timeout=60.0, follow_redirects=True
+            ) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                dest.write_bytes(response.content)
+
+            logger.info("Saved %d bytes → %s", len(response.content), dest)
+            return str(dest)
+
+        except httpx.HTTPStatusError as exc:
+            logger.error("HTTP %d for %s", exc.response.status_code, url)
+        except httpx.RequestError as exc:
+            logger.error("Request error downloading %s: %s", url, exc)
+        except Exception:
+            logger.exception("Unexpected error downloading %s", url)
+        return None
+
+    # ------------------------------------------------------------------
+    # Playwright browser download
+    # ------------------------------------------------------------------
+
+    async def _try_browser_download(self, url: str) -> str | None:
+        """Render an HTML page in headless Chromium and grab the PDF."""
+        logger.info("Browser download: %s", url)
+
+        try:
+            async with async_playwright() as pw:
+                browser = await pw.chromium.launch(headless=True)
+                context = await browser.new_context(accept_downloads=True)
+                page = await context.new_page()
+                page.set_default_timeout(30_000)
+
+                # Listen for auto-triggered downloads.
+                download_future: asyncio.Future = asyncio.get_event_loop().create_future()
+
+                def _on_download(dl):  # type: ignore[no-untyped-def]
+                    if not download_future.done():
+                        download_future.set_result(dl)
+
+                page.on("download", _on_download)
+
+                try:
+                    await page.goto(url, wait_until="networkidle", timeout=30_000)
+                except Exception as nav_err:
+                    logger.warning("Navigation issue for %s: %s", url, nav_err)
+
+                download = None
+
+                # 1. Check for auto-download.
+                if download_future.done():
+                    download = download_future.result()
+                else:
+                    # 2. Look for PDF links on the page.
+                    links = await page.query_selector_all("a")
+                    target_link = None
+
+                    for link in links:
+                        href = await link.get_attribute("href") or ""
+                        text = (await link.inner_text()).lower()
+                        href_lower = href.lower()
+
+                        if href_lower.endswith(".pdf"):
+                            target_link = link
+                            break
+                        if (
+                            "annual report" in text or "download" in text
+                        ) and ".pdf" in href_lower:
+                            target_link = link
+                            break
+
+                    if target_link:
+                        logger.info("Clicking PDF link on page")
+                        try:
+                            async with page.expect_download(timeout=15_000) as dl_info:
+                                await target_link.click()
+                            download = await dl_info.value
+                        except Exception:
+                            logger.warning("Click did not trigger a download")
+
+                if download:
+                    fname = download.suggested_filename
+                    if not fname.lower().endswith(".pdf"):
+                        fname += ".pdf"
+                    dest = self.download_dir / fname
+                    await download.save_as(str(dest))
+                    await browser.close()
+                    logger.info("Browser download saved → %s", dest)
+                    return str(dest)
+
+                await browser.close()
+                logger.info("No PDF found on page %s", url)
+                return None
+
+        except Exception:
+            logger.exception("Playwright error for %s", url)
+        return None

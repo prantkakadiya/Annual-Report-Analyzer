@@ -1,0 +1,25 @@
+[project]
+name = "annual-report-analyzer"
+version = "1.0.0"
+description = "Local agentic pipeline for analyzing company annual reports with citation-backed extraction"
+requires-python = ">=3.11"
+dependencies = [
+    "streamlit>=1.38.0",
+    "openai>=1.50.0",
+    "tavily-python>=0.4.0",
+    "playwright>=1.45.0",
+    "pymupdf4llm>=0.0.10",
+    "pymupdf>=1.24.0",
+    "faiss-cpu>=1.8.0",
+    "pydantic>=2.8.0",
+    "python-dotenv>=1.0.1",
+    "httpx>=0.27.0",
+    "fpdf2>=2.7.9",
+    "nest-asyncio>=1.6.0",
+    "numpy>=1.26.0",
+    "pandas>=2.1.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

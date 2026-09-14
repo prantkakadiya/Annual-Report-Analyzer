@@ -15,8 +15,11 @@ if [ -z "$LLAMA_SERVER" ]; then
     fi
 fi
 
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$DIR")"
+
 # Find embedding model
-MODEL="${EMBEDDING_MODEL_PATH:-../Embedding model/Qwen3-Embedding-0.6B-Q8_0.gguf}"
+MODEL="${EMBEDDING_MODEL_PATH:-$PROJECT_ROOT/Embedding model/Qwen3-Embedding-0.6B-Q8_0.gguf}"
 
 if [ ! -f "$MODEL" ]; then
     echo "Error: Model file not found at $MODEL"

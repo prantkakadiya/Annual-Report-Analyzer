@@ -15,8 +15,11 @@ if [ -z "$LLAMA_SERVER" ]; then
     fi
 fi
 
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$DIR")"
+
 # Find model
-MODEL="${LLM_MODEL_PATH:-../llm/Qwen3.5-9B-Q4_K_M.gguf}"
+MODEL="${LLM_MODEL_PATH:-$PROJECT_ROOT/llm/Qwen3.5-9B-Q4_K_M.gguf}"
 
 if [ ! -f "$MODEL" ]; then
     echo "Error: Model file not found at $MODEL"

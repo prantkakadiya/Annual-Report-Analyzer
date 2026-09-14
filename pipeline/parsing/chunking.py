@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from typing import TYPE_CHECKING
 
 from pipeline.parsing.parse import ParsedReport
 from pipeline.parsing.sections import SectionContent

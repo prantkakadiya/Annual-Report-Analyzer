@@ -116,12 +116,9 @@ class SectionSplitter:
             )
             try:
                 import asyncio
-
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    import nest_asyncio
-                    nest_asyncio.apply()
-                sem_sections = loop.run_until_complete(
+                import nest_asyncio
+                nest_asyncio.apply()
+                sem_sections = asyncio.run(
                     self._semantic_fallback(missing, rag_index)
                 )
                 sections.update(sem_sections)

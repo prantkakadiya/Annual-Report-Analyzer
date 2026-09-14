@@ -471,7 +471,7 @@ def _render_chat() -> None:
         with st.chat_message("assistant"):
             with st.spinner("Searching report…"):
                 try:
-                    answer, cited_pages = asyncio.get_event_loop().run_until_complete(
+                    answer, cited_pages = asyncio.run(
                         rag.answer_question(
                             question,
                             chat_history=st.session_state.chat_history,
@@ -520,7 +520,7 @@ def main() -> None:
 
         st.session_state.is_running = True
         try:
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 _run_pipeline(company_name, pdf_path=tmp_path)
             )
             st.session_state.result = result
@@ -534,7 +534,7 @@ def main() -> None:
     elif run_clicked and company_name:
         st.session_state.is_running = True
         try:
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 _run_pipeline(company_name)
             )
             st.session_state.result = result

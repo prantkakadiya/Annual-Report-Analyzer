@@ -29,4 +29,7 @@ fi
 echo "Starting Embedding server with model: $MODEL"
 echo "Using llama-server: $LLAMA_SERVER"
 
+# Hide GPU completely from this process
+export CUDA_VISIBLE_DEVICES=""
+
 $LLAMA_SERVER -m "$MODEL" -ngl 0 --embedding --port 8081

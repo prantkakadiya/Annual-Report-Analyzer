@@ -95,8 +95,11 @@ class ReportParser:
         )
 
         pages: list[PageContent] = []
-        for chunk in md_chunks:
-            page_num = chunk.get("metadata", {}).get("page", 0) + 1
+        for i, chunk in enumerate(md_chunks):
+            # pymupdf4llm metadata contains 'page_number' (1-indexed) in some versions
+            meta = chunk.get("metadata", {})
+            page_num = meta.get("page_number") or meta.get("page") or (i + 1)
+            
             text = chunk.get("text", "")
             if not text.strip():
                 logger.debug("Page %d is empty, skipping", page_num)

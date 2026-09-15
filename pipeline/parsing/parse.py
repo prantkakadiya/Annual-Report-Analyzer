@@ -52,17 +52,15 @@ class ReportParser:
         logger.info("Parsing PDF: %s", pdf_path)
 
         try:
-            pages = self._extract_pages(pdf_path)
+            pages, total_pages = self._extract_pages(pdf_path)
         except Exception:
             logger.exception("Failed to extract pages from %s", pdf_path)
             raise
 
         if not pages:
-            msg = f"No pages extracted from {pdf_path}"
-            logger.error(msg)
-            raise RuntimeError(msg)
+            raise RuntimeError("No text could be extracted from the PDF.")
 
-        full_text = "\n".join(
+        full_text = "\n\n".join(
             f"<!-- PAGE {p.page_number} -->\n{p.text}" for p in pages
         )
 
@@ -76,7 +74,7 @@ class ReportParser:
 
         return ParsedReport(
             pages=pages,
-            total_pages=len(pages),
+            total_pages=total_pages,
             full_text=full_text,
         )
 
@@ -84,7 +82,7 @@ class ReportParser:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _extract_pages(self, pdf_path: str) -> list[PageContent]:
+    def _extract_pages(self, pdf_path: str) -> tuple[list[PageContent], int]:
         """Extract each page as Markdown via pymupdf4llm.
 
         ``page_chunks=True`` makes the library return a list of dicts,
@@ -106,5 +104,5 @@ class ReportParser:
                 continue
             pages.append(PageContent(page_number=page_num, text=text))
 
-        logger.info("Extracted %d non-empty pages", len(pages))
-        return pages
+        logger.info("Extracted %d non-empty pages out of %d total pages", len(pages), len(md_chunks))
+        return pages, len(md_chunks)

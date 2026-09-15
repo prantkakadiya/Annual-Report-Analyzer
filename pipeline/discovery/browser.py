@@ -32,9 +32,7 @@ class ReportDownloader:
         logger.info("Download directory: %s", self.download_dir)
 
     async def download_from_candidates(
-        self,
-        candidates: list[SearchCandidate],
-        company_name: str,
+        self, candidates: list[SearchCandidate], company_name: str, progress_callback=None
     ) -> list[tuple[SearchCandidate, str]]:
         """Try each candidate in score order, return successful downloads.
 
@@ -46,7 +44,7 @@ class ReportDownloader:
         for candidate in candidates:
             try:
                 logger.info("Trying candidate: %s", candidate.url)
-                path = await self._try_download(candidate)
+                path = await self._try_download(candidate, progress_callback)
                 if path:
                     logger.info("Downloaded %s → %s", candidate.url, path)
                     results.append((candidate, path))
@@ -60,16 +58,18 @@ class ReportDownloader:
             )
         return results
 
-    async def _try_download(self, candidate: SearchCandidate) -> str | None:
+    async def _try_download(self, candidate: SearchCandidate, progress_callback=None) -> str | None:
         if candidate.is_direct_pdf:
-            return await self._try_direct_download(candidate.url)
+            return await self._try_direct_download(candidate.url, progress_callback)
         return await self._try_browser_download(candidate.url)
 
     # ------------------------------------------------------------------
     # Direct HTTP download
     # ------------------------------------------------------------------
 
-    async def _try_direct_download(self, url: str) -> str | None:
+    async def _try_direct_download(
+        self, url: str, progress_callback=None
+    ) -> str | None:
         """Download a direct PDF link with httpx."""
         logger.info("Direct download: %s", url)
         try:
@@ -83,11 +83,19 @@ class ReportDownloader:
             async with httpx.AsyncClient(
                 verify=False, timeout=60.0, follow_redirects=True
             ) as client:
-                response = await client.get(url)
-                response.raise_for_status()
-                dest.write_bytes(response.content)
+                async with client.stream("GET", url) as response:
+                    response.raise_for_status()
+                    total_size = int(response.headers.get("content-length", 0))
+                    downloaded = 0
+                    
+                    with open(dest, "wb") as f:
+                        async for chunk in response.aiter_bytes(chunk_size=65536):
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if progress_callback:
+                                progress_callback(downloaded, total_size)
 
-            logger.info("Saved %d bytes → %s", len(response.content), dest)
+            logger.info("Saved %d bytes → %s", downloaded, dest)
             return str(dest)
 
         except httpx.HTTPStatusError as exc:

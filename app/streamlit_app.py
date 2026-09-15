@@ -143,9 +143,20 @@ async def _run_pipeline(
         # ── Step 2: Download ────────────────────────────────────────
         _advance("Downloading report PDF…")
         downloader = ReportDownloader(download_dir=f"{DATA_DIR}/downloads")
+        
+        # Setup a progress bar for the download
+        dl_progress = st.progress(0, text="Downloading PDF...")
+        def update_dl_progress(downloaded: int, total_size: int):
+            if total_size > 0:
+                pct = min(downloaded / total_size, 1.0)
+                dl_progress.progress(pct, text=f"Downloading PDF... {downloaded/1024/1024:.1f}MB / {total_size/1024/1024:.1f}MB")
+            else:
+                dl_progress.progress(0.5, text=f"Downloading PDF... {downloaded/1024/1024:.1f}MB")
+                
         downloads = await downloader.download_from_candidates(
-            candidates, company_name
+            candidates, company_name, progress_callback=update_dl_progress
         )
+        dl_progress.empty()
         if not downloads:
             st.warning("Could not download any PDF. Please upload manually.")
             raise RuntimeError("Download failed")
@@ -501,6 +512,30 @@ def _render_chat() -> None:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+from contextlib import contextmanager
+import subprocess
+import time
+
+@contextmanager
+def manage_embedding_server():
+    """Starts the embedding server and guarantees it stops when done."""
+    emb_server_process = subprocess.Popen(
+        [os.path.abspath("llm_server/start_embedding_server.sh")],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        cwd=os.path.abspath("llm_server")
+    )
+    # Wait for the model to load
+    time.sleep(5)
+    try:
+        yield
+    finally:
+        emb_server_process.terminate()
+        try:
+            emb_server_process.wait(2)
+        except subprocess.TimeoutExpired:
+            emb_server_process.kill()
+
 def main() -> None:
     _init_state()
 
@@ -520,9 +555,10 @@ def main() -> None:
 
         st.session_state.is_running = True
         try:
-            result = asyncio.run(
-                _run_pipeline(company_name or None, pdf_path=tmp_path)
-            )
+            with manage_embedding_server():
+                result = asyncio.run(
+                    _run_pipeline(company_name or None, pdf_path=tmp_path)
+                )
             st.session_state.result = result
         except Exception as exc:
             logger.exception("Pipeline failed (upload)")
@@ -534,9 +570,10 @@ def main() -> None:
     elif run_clicked and company_name:
         st.session_state.is_running = True
         try:
-            result = asyncio.run(
-                _run_pipeline(company_name)
-            )
+            with manage_embedding_server():
+                result = asyncio.run(
+                    _run_pipeline(company_name)
+                )
             st.session_state.result = result
         except Exception as exc:
             logger.exception("Pipeline failed (search)")

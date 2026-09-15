@@ -82,7 +82,7 @@ class SectionSplitter:
     def __init__(self) -> None:
         self._patterns = _SECTION_PATTERNS
 
-    def split(
+    async def split(
         self,
         parsed_report: ParsedReport,
         rag_index: Any | None = None,
@@ -115,12 +115,7 @@ class SectionSplitter:
                 missing,
             )
             try:
-                import asyncio
-                import nest_asyncio
-                nest_asyncio.apply()
-                sem_sections = asyncio.run(
-                    self._semantic_fallback(missing, rag_index)
-                )
+                sem_sections = await self._semantic_fallback(missing, rag_index)
                 sections.update(sem_sections)
             except Exception:
                 logger.exception("Semantic fallback failed")

@@ -13,7 +13,6 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-import nest_asyncio
 import streamlit as st
 
 # ---------------------------------------------------------------------------
@@ -30,8 +29,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Allow nested event loops (Streamlit runs its own).
-nest_asyncio.apply()
 
 # ---------------------------------------------------------------------------
 # Pipeline imports
@@ -205,7 +202,7 @@ async def _run_pipeline(
     # ── Step 6: Section splitting ───────────────────────────────────
     _advance("Splitting into sections…")
     splitter = SectionSplitter()
-    sections = splitter.split(parsed, rag_index=rag)
+    sections = await splitter.split(parsed, rag_index=rag)
     sections_found = {name: (name in sections) for name in [
         "MD&A", "Directors' Report", "Balance Sheet",
         "Statement of Profit & Loss", "Cash Flow Statement",

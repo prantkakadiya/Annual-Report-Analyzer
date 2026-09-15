@@ -60,13 +60,18 @@ class ReportDownloader:
 
     async def _try_download(self, candidate: SearchCandidate, progress_callback=None) -> str | None:
         """Try direct download first if it looks like a PDF, fallback to Playwright browser download."""
-        if candidate.is_direct_pdf or candidate.url.lower().endswith(".pdf"):
-            path = await self._try_direct_download(candidate.url, progress_callback)
+        from urllib.parse import urlparse
+        
+        parsed_url = urlparse(candidate.url.strip())
+        is_pdf_path = parsed_url.path.lower().endswith(".pdf")
+        
+        if candidate.is_direct_pdf or is_pdf_path:
+            path = await self._try_direct_download(candidate.url.strip(), progress_callback)
             if path:
                 return path
             logger.info("Direct download failed, falling back to browser for: %s", candidate.url)
             
-        return await self._try_browser_download(candidate.url)
+        return await self._try_browser_download(candidate.url.strip())
 
     # ------------------------------------------------------------------
     # Direct HTTP download
@@ -85,8 +90,15 @@ class ReportDownloader:
 
             dest = self.download_dir / filename
 
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://www.google.com/"
+            }
+
             async with httpx.AsyncClient(
-                verify=False, timeout=60.0, follow_redirects=True
+                verify=False, timeout=60.0, follow_redirects=True, headers=headers
             ) as client:
                 async with client.stream("GET", url) as response:
                     response.raise_for_status()

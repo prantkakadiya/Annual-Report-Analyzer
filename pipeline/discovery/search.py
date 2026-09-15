@@ -100,9 +100,9 @@ class ReportSearcher:
         for i, c in enumerate(candidates):
             candidates_json.append({
                 "id": i,
-                "url": c.url,
-                "title": c.title,
-                "snippet": c.snippet,
+                "url": c.url.strip()[:500],
+                "title": c.title[:150],
+                "snippet": c.snippet[:200],
                 "is_direct_pdf": c.is_direct_pdf
             })
             
@@ -188,7 +188,10 @@ class ReportSearcher:
         content_length = None
         
         try:
-            async with httpx.AsyncClient(verify=False, timeout=8.0) as client:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            }
+            async with httpx.AsyncClient(verify=False, timeout=8.0, headers=headers) as client:
                 response = await client.head(url, follow_redirects=True)
                 
                 content_type = response.headers.get("Content-Type", "").lower()

@@ -102,11 +102,18 @@ class ReportValidator:
         {text[:4000]}  # Limit text length just in case
         
         Determine if this document is an Annual Report {target_check}.
+        
+        CRITICAL INSTRUCTION FOR FINDING COMPANY NAME: 
+        The company name will rarely be explicitly labeled like "Company Name: XYZ". 
+        You must be smart and deduce the company name from context clues on the cover page or table of contents. 
+        Look for large headers, copyright footers, letterheads, or the primary entity the report is talking about. 
+        For example, if you see "Tata Motors Annual Report 2024", the company name is "Tata Motors".
+        
         Provide the output as JSON matching this schema:
         {{
             "is_annual_report": true/false,
-            "company_match": true/false,  // Set true if you confidently identify a company, even if no target was given
-            "detected_company": "Name of the company found in text",
+            "company_match": true/false,  // Set true if you confidently deduce the company from context clues, even without an explicit label or target.
+            "detected_company": "Name of the company found/deduced in text",
             "fiscal_year": "e.g., 2023-24 or 2024",
             "confidence": 0.0 to 1.0,
             "reason": "Brief explanation"

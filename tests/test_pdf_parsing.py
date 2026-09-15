@@ -51,3 +51,12 @@ def test_pdf_parsing():
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+def test_pdf_pars():
+    parser = ReportParser()
+    parsed = parser.parse("/home/prant/Desktop/python/job/Annual Report Analyzer/downloads/Annual-Report-FY-2023-24-1.pdf")
+    print(parsed)
+    
+
+
+test_pdf_pars()

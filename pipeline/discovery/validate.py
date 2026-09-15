@@ -113,17 +113,31 @@ class ReportValidator:
         }}
         """
 
+        schema = {
+            "type": "object",
+            "properties": {
+                "is_annual_report": {"type": "boolean"},
+                "company_match": {"type": "boolean"},
+                "detected_company": {"type": "string"},
+                "fiscal_year": {"type": "string"},
+                "confidence": {"type": "number"},
+                "reason": {"type": "string"}
+            },
+            "required": ["is_annual_report", "company_match", "detected_company", "fiscal_year", "confidence", "reason"],
+            "additionalProperties": False
+        }
+
         try:
             response = await self.client.chat.completions.create(
-                model="qwen", # Use a generic name, local server typically ignores it or uses default
+                model="qwen",
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant that outputs only valid JSON."},
                     {"role": "user", "content": prompt}
                 ],
-                response_format={"type": "json_object"},
+                response_format={"type": "json_schema", "json_schema": {"name": "validation", "schema": schema, "strict": True}},
                 temperature=0.1,
-                max_tokens=500,
-                timeout=30.0
+                max_tokens=300,
+                timeout=45.0
             )
 
             result_text = response.choices[0].message.content

@@ -145,7 +145,15 @@ async def _step_rag_indexing(parsed_report, company_name: str, fiscal_year: str,
         llm_base_url=LLM_BASE_URL,
         cache=cache,
     )
-    await rag.build_index(chunks, company_id)
+    
+    emb_progress = st.progress(0, text=f"Embedding chunks... 0/{len(chunks)}")
+    def update_emb_progress(processed: int, total: int):
+        if total > 0:
+            pct = min(processed / total, 1.0)
+            emb_progress.progress(pct, text=f"Embedding chunks... {processed}/{total}")
+            
+    await rag.build_index(chunks, company_id, progress_callback=update_emb_progress)
+    emb_progress.empty()
     return rag, chunks
 
 async def _run_pipeline(

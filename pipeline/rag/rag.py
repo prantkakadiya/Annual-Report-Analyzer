@@ -48,20 +48,21 @@ class RAGEngine:
     # ------------------------------------------------------------------
 
     async def build_index(
-        self, chunks: list[DocumentChunk], company_id: str
+        self, chunks: list[DocumentChunk], company_id: str, progress_callback=None
     ) -> None:
         """Embed all chunks and build a FAISS inner-product index.
 
         Args:
             chunks: Document chunks to embed.
             company_id: Slugified identifier for cache persistence.
+            progress_callback: Optional callable for reporting progress.
         """
         logger.info(
             "Building FAISS index for '%s' with %d chunks", company_id, len(chunks)
         )
 
         texts = [c.text for c in chunks]
-        embeddings = await self.embed_texts(texts)
+        embeddings = await self.embed_texts(texts, progress_callback=progress_callback)
 
         if not embeddings:
             logger.error("No embeddings returned – cannot build index")
@@ -122,21 +123,23 @@ class RAGEngine:
     # ------------------------------------------------------------------
 
     async def embed_texts(
-        self, texts: list[str], batch_size: int = 32
+        self, texts: list[str], batch_size: int = 32, progress_callback=None
     ) -> list[list[float]]:
         """Embed a list of texts via the local embedding server.
 
         Args:
             texts: Strings to embed.
             batch_size: Number of texts per API call.
+            progress_callback: Optional callable for reporting progress.
 
         Returns:
             List of embedding vectors (same order as *texts*).
         """
         logger.info("Embedding %d texts in batches of %d", len(texts), batch_size)
         all_embeddings: list[list[float]] = []
+        total_texts = len(texts)
 
-        for i in range(0, len(texts), batch_size):
+        for i in range(0, total_texts, batch_size):
             batch = texts[i : i + batch_size]
             try:
                 response = await self.embed_client.embeddings.create(
@@ -146,12 +149,15 @@ class RAGEngine:
                 batch_embs = [d.embedding for d in response.data]
                 all_embeddings.extend(batch_embs)
                 logger.debug("Embedded batch %d/%d", i // batch_size + 1,
-                             (len(texts) + batch_size - 1) // batch_size)
+                             (total_texts + batch_size - 1) // batch_size)
             except Exception:
                 logger.exception("Error embedding batch starting at index %d", i)
                 # Pad with zeros so indices stay aligned.
                 dummy_dim = len(all_embeddings[0]) if all_embeddings else 1024
                 all_embeddings.extend([[0.0] * dummy_dim] * len(batch))
+
+            if progress_callback:
+                progress_callback(min(i + batch_size, total_texts), total_texts)
 
         return all_embeddings
 

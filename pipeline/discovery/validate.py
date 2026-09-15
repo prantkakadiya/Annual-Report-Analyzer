@@ -29,9 +29,9 @@ class ReportValidator:
         self.client = AsyncOpenAI(base_url=f"{self.llm_base_url}/v1", api_key="not-needed")
         logger.info(f"ReportValidator initialized with LLM base URL: {self.llm_base_url}")
 
-    async def validate(self, pdf_path: str, company_name: str) -> ValidationResult:
+    async def validate(self, pdf_path: str, company_name: str | None = None) -> ValidationResult:
         """Main validation method."""
-        logger.info(f"Starting validation for {pdf_path} (Company: {company_name})")
+        logger.info(f"Starting validation for {pdf_path} (Company: {company_name or 'Auto-detect'})")
         
         if not os.path.exists(pdf_path):
             logger.error(f"File not found: {pdf_path}")
@@ -89,9 +89,11 @@ class ReportValidator:
             logger.exception(f"Error extracting text from {pdf_path}: {e}")
             raise
 
-    async def _llm_validate(self, text: str, company_name: str) -> ValidationResult:
+    async def _llm_validate(self, text: str, company_name: str | None) -> ValidationResult:
         """Ask LLM to confirm company + fiscal year."""
         logger.info("Sending text to LLM for validation")
+        
+        target_check = f'for the company "{company_name}"' if company_name else "and identify the company"
         
         prompt = f"""
         You are an expert financial document validator. Analyze the following text extracted from the first pages of a document.
@@ -99,11 +101,11 @@ class ReportValidator:
         Text:
         {text[:4000]}  # Limit text length just in case
         
-        Determine if this document is an Annual Report for the company "{company_name}".
+        Determine if this document is an Annual Report {target_check}.
         Provide the output as JSON matching this schema:
         {{
             "is_annual_report": true/false,
-            "company_match": true/false,
+            "company_match": true/false,  // Set true if you confidently identify a company, even if no target was given
             "detected_company": "Name of the company found in text",
             "fiscal_year": "e.g., 2023-24 or 2024",
             "confidence": 0.0 to 1.0,

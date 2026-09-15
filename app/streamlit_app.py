@@ -97,7 +97,7 @@ def _init_state() -> None:
 # Pipeline orchestration
 # ---------------------------------------------------------------------------
 async def _run_pipeline(
-    company_name: str,
+    company_name: str | None = None,
     pdf_path: str | None = None,
 ) -> AnalysisResult:
     """Execute the full analysis pipeline with live progress updates.
@@ -165,8 +165,10 @@ async def _run_pipeline(
         logger.warning("Validation failed: %s", val.reason)
         raise RuntimeError(f"Validation failed: {val.reason}")
     fiscal_year = val.fiscal_year or "Unknown"
+    company_name = company_name or val.detected_company or "Unknown Company"
+    
     status_area.write(
-        f"  ✅ Confirmed: **{val.detected_company}** — FY {fiscal_year}"
+        f"  ✅ Confirmed: **{company_name}** — FY {fiscal_year}"
     )
 
     # Check cache
@@ -505,7 +507,8 @@ def main() -> None:
     company_name, run_clicked, upload_bytes = _render_sidebar()
 
     # ── Handle manual upload ────────────────────────────────────────
-    if upload_bytes and company_name:
+    if upload_bytes and (run_clicked or st.session_state.get("_last_upload") != hash(upload_bytes)):
+        st.session_state["_last_upload"] = hash(upload_bytes)
         tmp = tempfile.NamedTemporaryFile(
             delete=False, suffix=".pdf", dir=f"{DATA_DIR}/downloads"
         )
@@ -518,7 +521,7 @@ def main() -> None:
         st.session_state.is_running = True
         try:
             result = asyncio.run(
-                _run_pipeline(company_name, pdf_path=tmp_path)
+                _run_pipeline(company_name or None, pdf_path=tmp_path)
             )
             st.session_state.result = result
         except Exception as exc:

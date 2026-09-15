@@ -113,6 +113,11 @@ class ReportValidator:
         }}
         """
 
+        # Debug: Save the exact prompt we are sending to the LLM
+        os.makedirs("logs", exist_ok=True)
+        with open("logs/last_validation_prompt.txt", "w", encoding="utf-8") as f:
+            f.write(prompt)
+
         schema = {
             "type": "object",
             "properties": {

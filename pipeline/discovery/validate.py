@@ -48,7 +48,7 @@ class ReportValidator:
             )
 
         try:
-            extracted_text = self._extract_first_pages(pdf_path, num_pages=2)
+            extracted_text = self._extract_first_pages(pdf_path, num_pages=5)
             if not extracted_text.strip():
                 logger.warning(f"No text extracted from first pages of {pdf_path}")
                 return ValidationResult(

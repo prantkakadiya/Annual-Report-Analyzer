@@ -123,7 +123,7 @@ class RAGEngine:
     # ------------------------------------------------------------------
 
     async def embed_texts(
-        self, texts: list[str], batch_size: int = 16, progress_callback=None
+        self, texts: list[str], batch_size: int = 32, progress_callback=None
     ) -> list[list[float]]:
         """Embed a list of texts via the local embedding server.
 
@@ -167,10 +167,15 @@ class RAGEngine:
 
     async def search(self, query: str, top_k: int = 10) -> list[DocumentChunk]:
         """Embed *query* and return the top-k most similar chunks."""
+        from pipeline.model_manager import model_manager
+        
         if self.index is None or self.index.ntotal == 0:
-            logger.warning("Search called on empty/uninitialised index")
+            logger.warning("Search called on empty or uninitialized index")
             return []
 
+        logger.info("Searching for: '%s'", query)
+        
+        model_manager.require_embedding()
         query_emb = await self.embed_texts([query])
         if not query_emb:
             return []
@@ -251,17 +256,19 @@ class RAGEngine:
         question: str,
         chat_history: list[ChatMessage] | None = None,
     ) -> tuple[str, list[int]]:
-        """Full RAG pipeline: rewrite → retrieve → generate answer.
-
-        Args:
-            question: The user's question.
-            chat_history: Previous messages for context.
-
-        Returns:
-            Tuple of (answer_text, list_of_cited_page_numbers).
-        """
+        """Full RAG pipeline: rewrite → retrieve → generate answer."""
+        from pipeline.model_manager import model_manager
+        
+        # 1. Rewrite query (uses LLM)
+        model_manager.require_llm()
         rewritten = await self.rewrite_query(question, chat_history)
+        
+        # 2. Search (uses Embedding Model)
+        model_manager.require_embedding()
         chunks = await self.search(rewritten)
+        
+        # 3. Generate answer (uses LLM)
+        model_manager.require_llm()
 
         if not chunks:
             return (

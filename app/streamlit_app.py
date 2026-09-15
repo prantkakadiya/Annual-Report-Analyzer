@@ -43,6 +43,7 @@ from pipeline.parsing.chunking import DocumentChunker  # noqa: E402
 from pipeline.parsing.parse import ReportParser  # noqa: E402
 from pipeline.parsing.sections import SectionSplitter  # noqa: E402
 from pipeline.rag.rag import RAGEngine  # noqa: E402
+from pipeline.model_manager import model_manager  # noqa: E402
 from pipeline.schema import (  # noqa: E402
     AnalysisResult,
     ChatMessage,
@@ -178,6 +179,10 @@ async def _run_pipeline(
 
     source_url: str | None = None
 
+    # Load LLM for discovery & validation
+    status_area.write("  ⚙️ Loading LLM into VRAM...")
+    model_manager.require_llm()
+
     # ── Discovery & Download
     if pdf_path is None:
         _advance("Searching for annual report…")
@@ -210,6 +215,8 @@ async def _run_pipeline(
 
     # ── Chunking & Embedding
     _advance("Chunking & building embeddings…")
+    status_area.write("  ⚙️ Swapping LLM for Embedding Model in VRAM...")
+    model_manager.require_embedding()
     rag, chunks = await _step_rag_indexing(parsed, company_name, fiscal_year, cache)
     st.session_state.rag_engine = rag
     status_area.write(f"  🔍 {len(chunks)} chunks indexed")
@@ -228,6 +235,8 @@ async def _run_pipeline(
 
     # ── Financial extraction
     _advance("Extracting financial metrics…")
+    status_area.write("  ⚙️ Swapping Embedding Model for LLM in VRAM...")
+    model_manager.require_llm()
     extractor = FinancialExtractor(llm_base_url=LLM_BASE_URL)
     financial_data = await extractor.extract(sections, company_name, fiscal_year)
     status_area.write(f"  💰 {len(financial_data.metrics)} metrics extracted")
@@ -508,25 +517,6 @@ from contextlib import contextmanager
 import subprocess
 import time
 
-@contextmanager
-def manage_embedding_server():
-    """Starts the embedding server and guarantees it stops when done."""
-    emb_server_process = subprocess.Popen(
-        [os.path.abspath("llm_server/start_embedding_server.sh")],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        cwd=os.path.abspath("llm_server")
-    )
-    # Wait for the model to load
-    time.sleep(5)
-    try:
-        yield
-    finally:
-        emb_server_process.terminate()
-        try:
-            emb_server_process.wait(2)
-        except subprocess.TimeoutExpired:
-            emb_server_process.kill()
 
 def main() -> None:
     _init_state()
@@ -547,7 +537,7 @@ def main() -> None:
 
         st.session_state.is_running = True
         try:
-            with manage_embedding_server():
+            if True:
                 result = asyncio.run(
                     _run_pipeline(company_name or None, pdf_path=tmp_path)
                 )
@@ -562,7 +552,7 @@ def main() -> None:
     elif run_clicked and company_name:
         st.session_state.is_running = True
         try:
-            with manage_embedding_server():
+            if True:
                 result = asyncio.run(
                     _run_pipeline(company_name)
                 )

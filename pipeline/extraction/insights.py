@@ -84,16 +84,30 @@ class InsightGenerator:
             "additionalProperties": False
         }
         
+        system_prompt = """You are a financial analyst expert in extracting business insights from annual reports. Output only valid JSON.
+Example output:
+{
+  "insights": [
+    {
+      "category": "Sector / industry classification",
+      "content": "The company operates primarily in the IT services and consulting sector.",
+      "page_numbers": [12, 14]
+    }
+  ]
+}"""
+
         try:
             logger.info(f"Generating insights for {company_name} - Category: {category}")
             response = await self.client.chat.completions.create(
                 model="qwen",
                 messages=[
-                    {"role": "system", "content": "You are a financial analyst expert in extracting business insights from annual reports."},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt}
                 ],
                 response_format={"type": "json_schema", "json_schema": {"name": "insight_generation", "schema": schema, "strict": True}},
-                temperature=0.3
+                temperature=0.3,
+                max_tokens=3000,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}}
             )
             
             usage = response.usage

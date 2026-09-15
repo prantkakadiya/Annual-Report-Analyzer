@@ -225,6 +225,7 @@ class RAGEngine:
                 ],
                 temperature=0.0,
                 max_tokens=256,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}}
             )
             rewritten = (resp.choices[0].message.content or "").strip()
             if rewritten:
@@ -285,6 +286,8 @@ class RAGEngine:
                 model="qwen",
                 messages=messages,
                 temperature=0.2,
+                max_tokens=2048,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}}
             )
             answer = resp.choices[0].message.content or ""
             if not answer.strip():

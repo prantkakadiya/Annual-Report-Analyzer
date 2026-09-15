@@ -43,16 +43,35 @@ class FinancialExtractor:
         prompt = self._build_extraction_prompt(section_text, section_name, company_name)
         schema = self._get_json_schema()
         
+        system_prompt = """You are a financial analyst expert in extracting structured data from annual reports. Output only valid JSON.
+Example output:
+{
+  "metrics": [
+    {
+      "name": "Revenue",
+      "current_year_consolidated": 150000.5,
+      "current_year_standalone": null,
+      "previous_year_consolidated": 135000.0,
+      "previous_year_standalone": null,
+      "unit": "INR Crore",
+      "page_number": 45,
+      "notes": "Revenue from operations"
+    }
+  ]
+}"""
+
         try:
             logger.info(f"Attempting extraction for {company_name} - {section_name}")
             response = await self.client.chat.completions.create(
                 model="qwen",
                 messages=[
-                    {"role": "system", "content": "You are a financial analyst expert in extracting structured data from annual reports."},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt}
                 ],
                 response_format={"type": "json_schema", "json_schema": {"name": "financial_extraction", "schema": schema, "strict": True}},
-                temperature=0.0
+                temperature=0.0,
+                max_tokens=3000,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}}
             )
             
             usage = response.usage

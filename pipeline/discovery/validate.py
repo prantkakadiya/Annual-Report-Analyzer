@@ -127,17 +127,29 @@ class ReportValidator:
             "additionalProperties": False
         }
 
+        system_prompt = """You are a helpful assistant that outputs only valid JSON.
+Example output:
+{
+  "is_annual_report": true,
+  "company_match": true,
+  "detected_company": "Infosys Limited",
+  "fiscal_year": "2023-24",
+  "confidence": 0.95,
+  "reason": "The text clearly mentions 'Annual Report 2023-24' for 'Infosys'."
+}"""
+
         try:
             response = await self.client.chat.completions.create(
                 model="qwen",
                 messages=[
-                    {"role": "system", "content": "You are a helpful assistant that outputs only valid JSON."},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt}
                 ],
                 response_format={"type": "json_schema", "json_schema": {"name": "validation", "schema": schema, "strict": True}},
                 temperature=0.1,
-                max_tokens=300,
-                timeout=45.0
+                max_tokens=1024,
+                timeout=45.0,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}}
             )
 
             result_text = response.choices[0].message.content

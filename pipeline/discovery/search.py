@@ -30,10 +30,18 @@ class ReportSearcher:
     async def search(self, company_name: str, fiscal_year: str | None = None) -> list[SearchCandidate]:
         """Main search method to find annual report candidates."""
         logger.info(f"Starting search for company: {company_name}, fiscal_year: {fiscal_year}")
+        
         queries = self._build_queries(company_name, fiscal_year)
+        candidates_list = self._fetch_candidates(queries)
         
+        candidates_list = await self._verify_candidates(candidates_list)
+        ranked_candidates = await self._rank_with_llm(candidates_list, company_name, fiscal_year)
+        
+        return ranked_candidates
+
+    def _fetch_candidates(self, queries: list[str]) -> list[SearchCandidate]:
+        """Executes search queries and returns a deduplicated list of candidates."""
         all_candidates: dict[str, SearchCandidate] = {}
-        
         for query in queries:
             try:
                 logger.info(f"Executing search query: {query}")
@@ -45,26 +53,22 @@ class ReportSearcher:
                     if not url or url in all_candidates:
                         continue
                         
-                    title = result.get("title", "")
-                    snippet = result.get("content", "")
-                    
-                    candidate = SearchCandidate(
+                    all_candidates[url] = SearchCandidate(
                         url=url,
-                        title=title,
-                        snippet=snippet,
+                        title=result.get("title", ""),
+                        snippet=result.get("content", ""),
                         score=0.0,
                         is_direct_pdf=False
                     )
-                    all_candidates[url] = candidate
-                    
             except Exception as e:
                 logger.exception(f"Error during search query '{query}': {e}")
                 
         # Limit checks to top 15 to save time
-        candidates_list = list(all_candidates.values())[:15]
-        
-        # Check candidates for direct PDFs
-        for candidate in candidates_list:
+        return list(all_candidates.values())[:15]
+
+    async def _verify_candidates(self, candidates: list[SearchCandidate]) -> list[SearchCandidate]:
+        """Checks if candidates are direct PDFs."""
+        for candidate in candidates:
             try:
                 is_pdf, content_type, content_length = await self._check_direct_pdf(candidate.url)
                 candidate.is_direct_pdf = is_pdf
@@ -72,10 +76,7 @@ class ReportSearcher:
                 candidate.content_length = content_length
             except Exception as e:
                 logger.exception(f"Failed checking direct PDF for {candidate.url}")
-                
-        # Use LLM to rank the candidates
-        ranked_candidates = await self._rank_with_llm(candidates_list, company_name, fiscal_year)
-        return ranked_candidates
+        return candidates
         
     def _build_queries(self, company_name: str, fiscal_year: str | None) -> list[str]:
         """Build search query variants."""

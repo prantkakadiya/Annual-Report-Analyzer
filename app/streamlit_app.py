@@ -96,19 +96,63 @@ def _init_state() -> None:
 # ---------------------------------------------------------------------------
 # Pipeline orchestration
 # ---------------------------------------------------------------------------
+async def _step_discovery(company_name: str) -> list:
+    searcher = ReportSearcher(llm_base_url=LLM_BASE_URL)
+    candidates = await searcher.search(company_name)
+    if not candidates:
+        st.warning("No candidates found. Please upload a PDF manually.")
+        raise RuntimeError("No search results")
+    return candidates
+
+async def _step_download(candidates: list, company_name: str) -> tuple[str, str]:
+    downloader = ReportDownloader(download_dir=f"{DATA_DIR}/downloads")
+    dl_progress = st.progress(0, text="Downloading PDF...")
+    def update_dl_progress(downloaded: int, total_size: int):
+        if total_size > 0:
+            pct = min(downloaded / total_size, 1.0)
+            dl_progress.progress(pct, text=f"Downloading PDF... {downloaded/1024/1024:.1f}MB / {total_size/1024/1024:.1f}MB")
+        else:
+            dl_progress.progress(0.5, text=f"Downloading PDF... {downloaded/1024/1024:.1f}MB")
+            
+    downloads = await downloader.download_from_candidates(
+        candidates, company_name, progress_callback=update_dl_progress
+    )
+    dl_progress.empty()
+    if not downloads:
+        st.warning("Could not download any PDF. Please upload manually.")
+        raise RuntimeError("Download failed")
+
+    candidate, pdf_path = downloads[0]
+    return candidate.url, pdf_path
+
+async def _step_validation(pdf_path: str, company_name: str | None) -> tuple[str, str]:
+    validator = ReportValidator(llm_base_url=LLM_BASE_URL)
+    val = await validator.validate(pdf_path, company_name)
+    if not val.is_valid:
+        st.error(f"Validation failed: {val.reason}")
+        logger.warning("Validation failed: %s", val.reason)
+        raise RuntimeError(f"Validation failed: {val.reason}")
+    fiscal_year = val.fiscal_year or "Unknown"
+    final_company = company_name or val.detected_company or "Unknown Company"
+    return final_company, fiscal_year
+
+async def _step_rag_indexing(parsed_report, company_name: str, fiscal_year: str, cache):
+    chunker = DocumentChunker()
+    chunks = chunker.chunk(parsed_report)
+    company_id = cache.make_company_id(company_name, fiscal_year)
+    rag = RAGEngine(
+        embedding_base_url=EMBEDDING_BASE_URL,
+        llm_base_url=LLM_BASE_URL,
+        cache=cache,
+    )
+    await rag.build_index(chunks, company_id)
+    return rag, chunks
+
 async def _run_pipeline(
     company_name: str | None = None,
     pdf_path: str | None = None,
 ) -> AnalysisResult:
-    """Execute the full analysis pipeline with live progress updates.
-
-    Args:
-        company_name: Company to analyse.
-        pdf_path: If provided, skip discovery and use this PDF directly.
-
-    Returns:
-        The completed ``AnalysisResult``.
-    """
+    """Execute the full analysis pipeline with live progress updates."""
     cache = _get_cache()
     progress = st.progress(0, text="Initialising…")
     status_area = st.status("🔄 Running analysis pipeline…", expanded=True)
@@ -124,63 +168,23 @@ async def _run_pipeline(
         status_area.write(f"**Step {step}/{total_steps}:** {label}")
         logger.info("Pipeline step %d/%d: %s", step, total_steps, label)
 
-    fiscal_year: str = ""
     source_url: str | None = None
 
-    # ── Step 1: Discovery / Upload ──────────────────────────────────
+    # ── Discovery & Download
     if pdf_path is None:
         _advance("Searching for annual report…")
-        try:
-            searcher = ReportSearcher(llm_base_url=LLM_BASE_URL)
-            candidates = await searcher.search(company_name)
-            if not candidates:
-                st.warning("No candidates found. Please upload a PDF manually.")
-                raise RuntimeError("No search results")
-        except Exception:
-            logger.exception("Search failed")
-            raise
-
-        # ── Step 2: Download ────────────────────────────────────────
-        _advance("Downloading report PDF…")
-        downloader = ReportDownloader(download_dir=f"{DATA_DIR}/downloads")
+        candidates = await _step_discovery(company_name)
         
-        # Setup a progress bar for the download
-        dl_progress = st.progress(0, text="Downloading PDF...")
-        def update_dl_progress(downloaded: int, total_size: int):
-            if total_size > 0:
-                pct = min(downloaded / total_size, 1.0)
-                dl_progress.progress(pct, text=f"Downloading PDF... {downloaded/1024/1024:.1f}MB / {total_size/1024/1024:.1f}MB")
-            else:
-                dl_progress.progress(0.5, text=f"Downloading PDF... {downloaded/1024/1024:.1f}MB")
-                
-        downloads = await downloader.download_from_candidates(
-            candidates, company_name, progress_callback=update_dl_progress
-        )
-        dl_progress.empty()
-        if not downloads:
-            st.warning("Could not download any PDF. Please upload manually.")
-            raise RuntimeError("Download failed")
-
-        candidate, pdf_path = downloads[0]
-        source_url = candidate.url
+        _advance("Downloading report PDF…")
+        source_url, pdf_path = await _step_download(candidates, company_name)
     else:
         _advance("Using uploaded PDF…")
         _advance("Skipping download (manual upload)")
 
-    # ── Step 3: Validation ──────────────────────────────────────────
+    # ── Validation
     _advance("Validating PDF…")
-    validator = ReportValidator(llm_base_url=LLM_BASE_URL)
-    val: ValidationResult = await validator.validate(pdf_path, company_name)
-    if not val.is_valid:
-        st.error(f"Validation failed: {val.reason}")
-        logger.warning("Validation failed: %s", val.reason)
-        raise RuntimeError(f"Validation failed: {val.reason}")
-    fiscal_year = val.fiscal_year or "Unknown"
-    company_name = company_name or val.detected_company or "Unknown Company"
-    
-    status_area.write(
-        f"  ✅ Confirmed: **{company_name}** — FY {fiscal_year}"
-    )
+    company_name, fiscal_year = await _step_validation(pdf_path, company_name)
+    status_area.write(f"  ✅ Confirmed: **{company_name}** — FY {fiscal_year}")
 
     # Check cache
     cached = cache.get_report(company_name, fiscal_year)
@@ -190,29 +194,19 @@ async def _run_pipeline(
         st.toast("Loaded from cache!", icon="⚡")
         return cached
 
-    # ── Step 4: Parsing ─────────────────────────────────────────────
+    # ── Parsing
     _advance("Parsing PDF to Markdown…")
     parser = ReportParser()
     parsed = parser.parse(pdf_path)
     status_area.write(f"  📄 {parsed.total_pages} pages extracted")
 
-    # ── Step 5: Chunking & Embedding ────────────────────────────────
+    # ── Chunking & Embedding
     _advance("Chunking & building embeddings…")
-    chunker = DocumentChunker()
-    chunks = chunker.chunk(parsed)
-
-    company_id = cache.make_company_id(company_name, fiscal_year)
-
-    rag = RAGEngine(
-        embedding_base_url=EMBEDDING_BASE_URL,
-        llm_base_url=LLM_BASE_URL,
-        cache=cache,
-    )
-    await rag.build_index(chunks, company_id)
+    rag, chunks = await _step_rag_indexing(parsed, company_name, fiscal_year, cache)
     st.session_state.rag_engine = rag
     status_area.write(f"  🔍 {len(chunks)} chunks indexed")
 
-    # ── Step 6: Section splitting ───────────────────────────────────
+    # ── Section splitting
     _advance("Splitting into sections…")
     splitter = SectionSplitter()
     sections = await splitter.split(parsed, rag_index=rag)
@@ -222,28 +216,21 @@ async def _run_pipeline(
         "Notes to Accounts", "Corporate Governance Report",
         "Auditor's Report",
     ]}
-    found_count = sum(sections_found.values())
-    status_area.write(
-        f"  📑 {found_count}/{len(sections_found)} standard sections found"
-    )
+    status_area.write(f"  📑 {sum(sections_found.values())}/{len(sections_found)} standard sections found")
 
-    # ── Step 7: Financial extraction ────────────────────────────────
+    # ── Financial extraction
     _advance("Extracting financial metrics…")
     extractor = FinancialExtractor(llm_base_url=LLM_BASE_URL)
     financial_data = await extractor.extract(sections, company_name, fiscal_year)
-    status_area.write(
-        f"  💰 {len(financial_data.metrics)} metrics extracted"
-    )
+    status_area.write(f"  💰 {len(financial_data.metrics)} metrics extracted")
 
-    # ── Step 8: Insight generation ──────────────────────────────────
+    # ── Insight generation
     _advance("Generating business insights…")
     insight_gen = InsightGenerator(llm_base_url=LLM_BASE_URL)
     insights = await insight_gen.generate(sections, company_name, fiscal_year)
-    status_area.write(
-        f"  💡 {len(insights.insights)} insights generated"
-    )
+    status_area.write(f"  💡 {len(insights.insights)} insights generated")
 
-    # ── Assemble result ─────────────────────────────────────────────
+    # ── Assemble result
     result = AnalysisResult(
         metadata=ReportMetadata(
             company_name=company_name,
@@ -259,13 +246,10 @@ async def _run_pipeline(
         sections_found=sections_found,
     )
 
-    # Persist
     cache.save_report(result)
-
     status_area.update(label="✅ Analysis complete!", state="complete")
     progress.progress(100, text="Done!")
     return result
-
 
 # ---------------------------------------------------------------------------
 # UI — Sidebar
@@ -372,6 +356,66 @@ def _render_sidebar() -> tuple[str, bool, bytes | None]:
 # ---------------------------------------------------------------------------
 # UI — Results tabs
 # ---------------------------------------------------------------------------
+def _render_financials_tab(result: AnalysisResult) -> None:
+    if result.financial_data and result.financial_data.metrics:
+        import pandas as pd
+        rows = []
+        for m in result.financial_data.metrics:
+            rows.append({
+                "Metric": m.name,
+                "CY Consolidated": m.current_year_consolidated,
+                "CY Standalone": m.current_year_standalone,
+                "PY Consolidated": m.previous_year_consolidated,
+                "PY Standalone": m.previous_year_standalone,
+                "Unit": m.unit,
+                "Page": f"[p.{m.page_number}]" if m.page_number else "—",
+                "Notes": m.notes or "",
+            })
+        st.dataframe(
+            pd.DataFrame(rows),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "CY Consolidated": st.column_config.NumberColumn(format=",.2f"),
+                "CY Standalone": st.column_config.NumberColumn(format=",.2f"),
+                "PY Consolidated": st.column_config.NumberColumn(format=",.2f"),
+                "PY Standalone": st.column_config.NumberColumn(format=",.2f"),
+            },
+        )
+    else:
+        st.info("No financial metrics were extracted.")
+
+def _render_insights_tab(result: AnalysisResult) -> None:
+    if result.insights and result.insights.insights:
+        by_cat: dict[str, list[str]] = {}
+        for ins in result.insights.insights:
+            by_cat.setdefault(ins.category, []).append(ins.content)
+
+        for cat, items in by_cat.items():
+            with st.expander(f"**{cat}**", expanded=True):
+                for item in items:
+                    st.markdown(f"- {item}")
+    else:
+        st.info("No insights were generated.")
+
+def _render_info_tab(result: AnalysisResult) -> None:
+    meta = result.metadata
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.subheader("Metadata")
+        st.markdown(f"- **Company:** {meta.company_name}")
+        st.markdown(f"- **Fiscal Year:** {meta.fiscal_year}")
+        st.markdown(f"- **Source:** {meta.source_url or 'Manual upload'}")
+        st.markdown(f"- **Pages:** {meta.total_pages or 'N/A'}")
+        st.markdown(f"- **Analysed:** {meta.discovered_at.strftime('%Y-%m-%d %H:%M')}")
+        st.markdown(f"- **Version:** {result.analysis_version}")
+
+    with col_b:
+        st.subheader("Sections Detected")
+        for sec, found in result.sections_found.items():
+            icon = "✅" if found else "❌"
+            st.markdown(f"- {icon} {sec}")
+
 def _render_results(result: AnalysisResult) -> None:
     """Render the four result tabs."""
     meta = result.metadata
@@ -381,74 +425,14 @@ def _render_results(result: AnalysisResult) -> None:
         ["💰 Financial Metrics", "💡 Insights", "💬 Report Chat", "ℹ️ Report Info"]
     )
 
-    # ── Tab 1: Financials ───────────────────────────────────────────
     with tab_fin:
-        if result.financial_data and result.financial_data.metrics:
-            import pandas as pd
-
-            rows = []
-            for m in result.financial_data.metrics:
-                rows.append({
-                    "Metric": m.name,
-                    "CY Consolidated": m.current_year_consolidated,
-                    "CY Standalone": m.current_year_standalone,
-                    "PY Consolidated": m.previous_year_consolidated,
-                    "PY Standalone": m.previous_year_standalone,
-                    "Unit": m.unit,
-                    "Page": f"[p.{m.page_number}]" if m.page_number else "—",
-                    "Notes": m.notes or "",
-                })
-            df = pd.DataFrame(rows)
-            st.dataframe(
-                df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "CY Consolidated": st.column_config.NumberColumn(format=",.2f"),
-                    "CY Standalone": st.column_config.NumberColumn(format=",.2f"),
-                    "PY Consolidated": st.column_config.NumberColumn(format=",.2f"),
-                    "PY Standalone": st.column_config.NumberColumn(format=",.2f"),
-                },
-            )
-        else:
-            st.info("No financial metrics were extracted.")
-
-    # ── Tab 2: Insights ─────────────────────────────────────────────
+        _render_financials_tab(result)
     with tab_ins:
-        if result.insights and result.insights.insights:
-            by_cat: dict[str, list[str]] = {}
-            for ins in result.insights.insights:
-                by_cat.setdefault(ins.category, []).append(ins.content)
-
-            for cat, items in by_cat.items():
-                with st.expander(f"**{cat}**", expanded=True):
-                    for item in items:
-                        st.markdown(f"- {item}")
-        else:
-            st.info("No insights were generated.")
-
-    # ── Tab 3: RAG Chat ─────────────────────────────────────────────
+        _render_insights_tab(result)
     with tab_chat:
         _render_chat()
-
-    # ── Tab 4: Report Info ──────────────────────────────────────────
     with tab_info:
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.subheader("Metadata")
-            st.markdown(f"- **Company:** {meta.company_name}")
-            st.markdown(f"- **Fiscal Year:** {meta.fiscal_year}")
-            st.markdown(f"- **Source:** {meta.source_url or 'Manual upload'}")
-            st.markdown(f"- **Pages:** {meta.total_pages or 'N/A'}")
-            st.markdown(f"- **Analysed:** {meta.discovered_at.strftime('%Y-%m-%d %H:%M')}")
-            st.markdown(f"- **Version:** {result.analysis_version}")
-
-        with col_b:
-            st.subheader("Sections Detected")
-            for sec, found in result.sections_found.items():
-                icon = "✅" if found else "❌"
-                st.markdown(f"- {icon} {sec}")
-
+        _render_info_tab(result)
 
 def _render_chat() -> None:
     """RAG chat panel."""

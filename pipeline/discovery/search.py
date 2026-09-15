@@ -199,12 +199,14 @@ class ReportSearcher:
                     
                 if "application/pdf" in content_type:
                     is_pdf = True
-                elif url.lower().endswith(".pdf") and response.status_code == 200:
-                    # Sometimes headers are wrong but URL ends in PDF
+                elif url.lower().endswith(".pdf") and response.status_code in (200, 403, 405):
+                    # Sometimes headers are wrong or servers block HEAD requests, but URL ends in PDF
                     is_pdf = True
                     
         except httpx.RequestError as e:
             logger.error(f"HTTP error during HEAD request to {url}: {e}")
+            if url.lower().endswith(".pdf"):
+                is_pdf = True
         except Exception as e:
             logger.exception(f"Unexpected error checking direct PDF {url}: {e}")
             

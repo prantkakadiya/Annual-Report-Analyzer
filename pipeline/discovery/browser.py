@@ -59,8 +59,13 @@ class ReportDownloader:
         return results
 
     async def _try_download(self, candidate: SearchCandidate, progress_callback=None) -> str | None:
-        if candidate.is_direct_pdf:
-            return await self._try_direct_download(candidate.url, progress_callback)
+        """Try direct download first if it looks like a PDF, fallback to Playwright browser download."""
+        if candidate.is_direct_pdf or candidate.url.lower().endswith(".pdf"):
+            path = await self._try_direct_download(candidate.url, progress_callback)
+            if path:
+                return path
+            logger.info("Direct download failed, falling back to browser for: %s", candidate.url)
+            
         return await self._try_browser_download(candidate.url)
 
     # ------------------------------------------------------------------

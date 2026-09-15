@@ -18,12 +18,14 @@ __version__ = "1.0.0"
 class ReportSearcher:
     """Searches for annual report PDFs using Tavily."""
     
-    def __init__(self, api_key: str | None = None):
+    def __init__(self, api_key: str | None = None, llm_base_url: str = "http://localhost:8080"):
         self.api_key = api_key or os.getenv("TAVILY_API_KEY")
         if not self.api_key:
             logger.error("TAVILY_API_KEY not provided or found in environment.")
             raise ValueError("Tavily API key is required.")
         self.client = TavilyClient(api_key=self.api_key)
+        from openai import AsyncOpenAI
+        self.llm_client = AsyncOpenAI(base_url=f"{llm_base_url}/v1", api_key="not-needed")
         
     async def search(self, company_name: str, fiscal_year: str | None = None) -> list[SearchCandidate]:
         """Main search method to find annual report candidates."""
@@ -35,9 +37,6 @@ class ReportSearcher:
         for query in queries:
             try:
                 logger.info(f"Executing search query: {query}")
-                # Use synchronous tavily client in a thread pool if needed, or just block
-                # Tavily doesn't have an async client in the standard package, so we just call it directly.
-                # If we need truly async, we could use asyncio.to_thread
                 response = self.client.search(query, search_depth="advanced", max_results=10)
                 results = response.get("results", [])
                 
@@ -49,13 +48,11 @@ class ReportSearcher:
                     title = result.get("title", "")
                     snippet = result.get("content", "")
                     
-                    score = self._score_candidate(url, title, snippet, company_name)
-                    
                     candidate = SearchCandidate(
                         url=url,
                         title=title,
                         snippet=snippet,
-                        score=score,
+                        score=0.0,
                         is_direct_pdf=False
                     )
                     all_candidates[url] = candidate
@@ -63,14 +60,11 @@ class ReportSearcher:
             except Exception as e:
                 logger.exception(f"Error during search query '{query}': {e}")
                 
-        # Check candidates for direct PDFs (concurrently or sequentially)
-        sorted_candidates = sorted(all_candidates.values(), key=lambda c: c.score, reverse=True)
-        top_candidates = sorted_candidates[:20]  # Limit checks to top 20
+        # Limit checks to top 15 to save time
+        candidates_list = list(all_candidates.values())[:15]
         
-        for candidate in top_candidates:
-            if candidate.score < 0:
-                continue
-            
+        # Check candidates for direct PDFs
+        for candidate in candidates_list:
             try:
                 is_pdf, content_type, content_length = await self._check_direct_pdf(candidate.url)
                 candidate.is_direct_pdf = is_pdf
@@ -79,12 +73,9 @@ class ReportSearcher:
             except Exception as e:
                 logger.exception(f"Failed checking direct PDF for {candidate.url}")
                 
-        # Re-sort after checking direct PDFs (give bonus to direct PDFs)
-        for c in top_candidates:
-            if c.is_direct_pdf:
-                c.score += 5.0
-                
-        return sorted(top_candidates, key=lambda c: c.score, reverse=True)
+        # Use LLM to rank the candidates
+        ranked_candidates = await self._rank_with_llm(candidates_list, company_name, fiscal_year)
+        return ranked_candidates
         
     def _build_queries(self, company_name: str, fiscal_year: str | None) -> list[str]:
         """Build search query variants."""
@@ -100,38 +91,93 @@ class ReportSearcher:
             
         return queries
         
-    def _score_candidate(self, url: str, title: str, snippet: str, company_name: str) -> float:
-        """Score based on URL patterns, domain, title match."""
-        score = 0.0
+    async def _rank_with_llm(self, candidates: list[SearchCandidate], company_name: str, fiscal_year: str | None) -> list[SearchCandidate]:
+        import json
+        if not candidates:
+            return []
+            
+        candidates_json = []
+        for i, c in enumerate(candidates):
+            candidates_json.append({
+                "id": i,
+                "url": c.url,
+                "title": c.title,
+                "snippet": c.snippet,
+                "is_direct_pdf": c.is_direct_pdf
+            })
+            
+        system_prompt = "You are an expert financial researcher picking the most likely official Annual Report PDF url for a company."
+        prompt = f"""
+        Company: {company_name}
+        Fiscal Year: {fiscal_year or 'Latest'}
         
-        url_lower = url.lower()
-        title_lower = title.lower()
-        company_lower = company_name.lower()
+        Search Results:
+        {json.dumps(candidates_json, indent=2)}
         
-        # Domain heuristic
-        if "bseindia.com" in url_lower or "nseindia.com" in url_lower:
-            score += 2.0
-        if "investor" in url_lower or "investors" in url_lower:
-            score += 2.0
+        Analyze the search results. Your goal is to select the BEST URL that points to the official Annual Report published by the company.
+        Prioritize results where `is_direct_pdf` is true and the domain appears official or is a recognized stock exchange (e.g., bseindia.com).
+        
+        Return a JSON object ranking the best candidate IDs in order of preference (best first).
+        Example output:
+        {{
+            "ranked_ids": [3, 0, 4],
+            "reason": "ID 3 is the official direct PDF for the 2024 annual report. ID 0 is a backup exchange link."
+        }}
+        """
+        
+        schema = {
+            "type": "object",
+            "properties": {
+                "ranked_ids": {
+                    "type": "array",
+                    "items": {"type": "integer"}
+                },
+                "reason": {"type": "string"}
+            },
+            "required": ["ranked_ids", "reason"],
+            "additionalProperties": False
+        }
+        
+        try:
+            logger.info("Asking LLM to rank search candidates...")
+            response = await self.llm_client.chat.completions.create(
+                model="qwen",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_schema", "json_schema": {"name": "rank_candidates", "schema": schema, "strict": True}},
+                temperature=0.1,
+                max_tokens=1000,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}}
+            )
             
-        # URL keywords
-        if "annual-report" in url_lower or "annual_report" in url_lower or "annualreport" in url_lower:
-            score += 3.0
+            content = response.choices[0].message.content
+            if content:
+                data = json.loads(content)
+                ranked_ids = data.get("ranked_ids", [])
+                logger.info(f"LLM Ranking: {ranked_ids}. Reason: {data.get('reason')}")
+                
+                # Reorder candidates based on LLM ranking
+                ranked_candidates = []
+                used_ids = set()
+                
+                for idx in ranked_ids:
+                    if 0 <= idx < len(candidates) and idx not in used_ids:
+                        ranked_candidates.append(candidates[idx])
+                        used_ids.add(idx)
+                        
+                # Append the rest just in case
+                for i, c in enumerate(candidates):
+                    if i not in used_ids:
+                        ranked_candidates.append(c)
+                        
+                return ranked_candidates
+        except Exception as e:
+            logger.exception(f"LLM ranking failed: {e}")
             
-        if "ar" in url_lower and ("2023" in url_lower or "2024" in url_lower):
-            score += 1.0
-            
-        if url_lower.endswith(".pdf"):
-            score += 2.0
-            
-        # Title match
-        if company_lower in title_lower:
-            score += 2.0
-        if "annual report" in title_lower:
-            score += 2.0
-            
-        logger.debug(f"Scored candidate {url} with score {score}")
-        return score
+        # Fallback to returning original list
+        return candidates
         
     async def _check_direct_pdf(self, url: str) -> tuple[bool, str | None, int | None]:
         """HEAD request, return (is_pdf, content_type, content_length)."""

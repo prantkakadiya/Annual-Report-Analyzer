@@ -131,7 +131,7 @@ async def _run_pipeline(
     if pdf_path is None:
         _advance("Searching for annual report…")
         try:
-            searcher = ReportSearcher()
+            searcher = ReportSearcher(llm_base_url=LLM_BASE_URL)
             candidates = await searcher.search(company_name)
             if not candidates:
                 st.warning("No candidates found. Please upload a PDF manually.")

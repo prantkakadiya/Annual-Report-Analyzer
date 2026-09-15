@@ -123,7 +123,7 @@ class RAGEngine:
     # ------------------------------------------------------------------
 
     async def embed_texts(
-        self, texts: list[str], batch_size: int = 32, progress_callback=None
+        self, texts: list[str], batch_size: int = 16, progress_callback=None
     ) -> list[list[float]]:
         """Embed a list of texts via the local embedding server.
 

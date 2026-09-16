@@ -18,27 +18,23 @@ _PAGE_MARKER_RE = re.compile(r"<!--\s*PAGE\s+(\d+)\s*-->")
 
 
 class DocumentChunker:
-    """Splits a parsed report into overlapping, page-tagged chunks.
+    """Splits a parsed report into page-sized chunks with adjacent page overlap.
 
-    Default sizes are ~512 tokens chunk / ~100 tokens overlap (approximated
-    at 4 chars ≈ 1 token).  Sentence boundaries are preferred as split
-    points to avoid cutting mid-sentence.
+    Since our embedding model (Qwen3-Embedding-0.6B) has a 32k token context
+    limit, we can comfortably embed entire pages at a time. This prevents
+    tearing tables or paragraphs apart. We add a small overlap from the 
+    previous and next pages to maintain context across page boundaries.
     """
 
-    def __init__(self, chunk_size: int = 2048, overlap: int = 400) -> None:
-        self.chunk_size = chunk_size  # characters
-        self.overlap = overlap
+    def __init__(self, overlap_chars: int = 1000) -> None:
+        self.overlap_chars = overlap_chars  # About 250 tokens overlap
 
     def chunk(
         self,
         parsed_report: ParsedReport,
         sections: dict[str, SectionContent] | None = None,
     ) -> list[DocumentChunk]:
-        """Chunk the full report text, preserving page numbers.
-
-        If *sections* is provided, each section is chunked independently
-        so that chunks don't span across section boundaries.  Otherwise
-        the report is chunked as one continuous text.
+        """Chunk the report text by page, including adjacent page overlaps.
 
         Args:
             parsed_report: Output of ``ReportParser.parse()``.
@@ -47,20 +43,66 @@ class DocumentChunker:
         Returns:
             A list of ``DocumentChunk`` instances.
         """
-        logger.info("Starting chunking (chunk_size=%d, overlap=%d)", self.chunk_size, self.overlap)
+        logger.info("Starting page-based chunking (overlap=%d chars)", self.overlap_chars)
 
         try:
             chunks: list[DocumentChunk] = []
+            pages = parsed_report.pages
+            total_pages = len(pages)
 
-            if sections:
-                for sec_name, sec in sections.items():
-                    sec_chunks = self._split_text(sec.text, section=sec_name)
-                    chunks.extend(sec_chunks)
-                    logger.debug(
-                        "Section '%s': %d chunks", sec_name, len(sec_chunks)
+            if not total_pages:
+                return []
+
+            for i, page in enumerate(pages):
+                page_text = page.text
+                
+                # Overlap from previous page
+                prev_overlap = ""
+                if i > 0 and self.overlap_chars > 0:
+                    prev_text = pages[i-1].text
+                    prev_overlap = prev_text[-self.overlap_chars:]
+                    if prev_overlap:
+                        # Try to snap to the first space to avoid cutting words
+                        snap = prev_overlap.find(" ")
+                        if snap != -1:
+                            prev_overlap = prev_overlap[snap:]
+                        prev_overlap = f"--- END OF PREVIOUS PAGE (p.{pages[i-1].page_number}) ---\n{prev_overlap}\n\n"
+
+                # Overlap from next page
+                next_overlap = ""
+                if i < total_pages - 1 and self.overlap_chars > 0:
+                    next_text = pages[i+1].text
+                    next_overlap = next_text[:self.overlap_chars]
+                    if next_overlap:
+                        # Try to snap to the last space to avoid cutting words
+                        snap = next_overlap.rfind(" ")
+                        if snap != -1:
+                            next_overlap = next_overlap[:snap]
+                        next_overlap = f"\n\n--- START OF NEXT PAGE (p.{pages[i+1].page_number}) ---\n{next_overlap}"
+
+                # Combine into single chunk
+                chunk_text = f"{prev_overlap}{page_text}{next_overlap}"
+
+                # Determine section if provided
+                section_name = None
+                if sections:
+                    for sec_name, sec_content in sections.items():
+                        if sec_content.start_page <= page.page_number <= sec_content.end_page:
+                            section_name = sec_name
+                            break
+
+                chunk_id = hashlib.sha256(
+                    f"page_{page.page_number}:{chunk_text[:200]}".encode()
+                ).hexdigest()[:16]
+
+                chunks.append(
+                    DocumentChunk(
+                        chunk_id=chunk_id,
+                        text=chunk_text,
+                        page_numbers=[page.page_number],
+                        section=section_name,
                     )
-            else:
-                chunks = self._split_text(parsed_report.full_text)
+                )
 
             logger.info(
                 "Chunking complete: %d chunks, avg size %.0f chars",
@@ -72,59 +114,3 @@ class DocumentChunker:
         except Exception:
             logger.exception("Error during chunking")
             raise
-
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
-
-    def _split_text(
-        self,
-        text: str,
-        section: str | None = None,
-    ) -> list[DocumentChunk]:
-        """Split *text* into overlapping chunks tracking page numbers."""
-        chunks: list[DocumentChunk] = []
-        text_len = len(text)
-        start = 0
-
-        while start < text_len:
-            end = min(start + self.chunk_size, text_len)
-
-            # Try to break at a sentence boundary (". ") to avoid mid-sentence cuts.
-            if end < text_len:
-                # Look for the last sentence-ending period in the second half of the chunk.
-                search_start = start + self.chunk_size // 2
-                break_at = text.rfind(". ", search_start, end)
-                if break_at == -1:
-                    break_at = text.rfind(".\n", search_start, end)
-                if break_at != -1:
-                    end = break_at + 2  # include the period and space/newline
-
-            chunk_text = text[start:end]
-
-            # Derive page numbers from <!-- PAGE N --> markers inside this chunk.
-            page_nums = [int(m) for m in _PAGE_MARKER_RE.findall(chunk_text)]
-            if not page_nums:
-                # Fall back: scan backwards from start for the most recent marker.
-                prev_markers = _PAGE_MARKER_RE.findall(text[:start])
-                page_nums = [int(prev_markers[-1])] if prev_markers else [1]
-
-            chunk_id = hashlib.sha256(
-                f"{chunk_text[:200]}:{sorted(set(page_nums))}".encode()
-            ).hexdigest()[:16]
-
-            chunks.append(
-                DocumentChunk(
-                    chunk_id=chunk_id,
-                    text=chunk_text,
-                    page_numbers=sorted(set(page_nums)),
-                    section=section,
-                )
-            )
-
-            if end >= text_len:
-                break
-
-            start = end - self.overlap
-
-        return chunks

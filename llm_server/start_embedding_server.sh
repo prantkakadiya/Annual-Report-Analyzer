@@ -29,4 +29,4 @@ fi
 echo "Starting Embedding server with model: $MODEL"
 echo "Using llama-server: $LLAMA_SERVER"
 
-$LLAMA_SERVER -m "$MODEL" -ngl 999 --embedding --port 8081
+exec "$LLAMA_SERVER" -m "$MODEL" -ngl 999 --embedding --port 8081

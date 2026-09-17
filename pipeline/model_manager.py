@@ -34,6 +34,13 @@ class ModelManager:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             except ProcessLookupError:
                 pass
+                
+            # Foolproof check: if ANY llama-server is somehow surviving and holding the port open, nuke it
+            try:
+                subprocess.run(["pkill", "-9", "-f", "llama-server"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+                
             logger.info(f"{name} server stopped.")
 
     def stop_all(self):

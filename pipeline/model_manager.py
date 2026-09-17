@@ -74,7 +74,7 @@ class ModelManager:
         )
         self.active_model = "llm"
         
-        if self._wait_for_port(8080, timeout=40):
+        if self._wait_for_port(8080, timeout=90):
             logger.info("LLM server is ready.")
         else:
             logger.warning("LLM server did not report ready in time.")
@@ -98,7 +98,7 @@ class ModelManager:
         )
         self.active_model = "embedding"
         
-        if self._wait_for_port(8081, timeout=30):
+        if self._wait_for_port(8081, timeout=60):
             logger.info("Embedding server is ready.")
         else:
             logger.warning("Embedding server did not report ready in time.")

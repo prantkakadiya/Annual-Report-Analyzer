@@ -213,6 +213,19 @@ async def _run_pipeline(
     model_manager.stop_all()
     parser = ReportParser()
     parsed = parser.parse(pdf_path)
+    
+    # Explicitly clear Docling/PyTorch from VRAM so the Embedding server can load
+    status_area.write("  ⚙️ Clearing Docling from VRAM...")
+    del parser
+    import gc
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
+        
     status_area.write(f"  📄 {parsed.total_pages} pages extracted")
 
     # ── Chunking & Embedding

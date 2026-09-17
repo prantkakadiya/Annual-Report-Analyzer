@@ -209,6 +209,8 @@ async def _run_pipeline(
 
     # ── Parsing
     _advance("Parsing PDF to Markdown…")
+    status_area.write("  ⚙️ Unloading LLM to free VRAM for Docling OCR...")
+    model_manager.stop_all()
     parser = ReportParser()
     parsed = parser.parse(pdf_path)
     status_area.write(f"  📄 {parsed.total_pages} pages extracted")

@@ -52,3 +52,5 @@ Thumbs.db
 
 # Objective docs (design spec, not part of the app)
 .Objective/
+
+pdf_experiments/

@@ -165,8 +165,8 @@ class RAGEngine:
     # Search
     # ------------------------------------------------------------------
 
-    async def search(self, query: str, top_k: int = 10, threshold: float = 0.3) -> list[DocumentChunk]:
-        """Embed *query* and return the top-k chunks that meet the threshold."""
+    async def search(self, query: str, top_k: int = 10, threshold: float = 0.3) -> list[tuple[DocumentChunk, float]]:
+        """Embed *query* and return the top-k chunks that meet the threshold along with their confidence scores."""
         from pipeline.model_manager import model_manager
         
         if self.index is None or self.index.ntotal == 0:
@@ -187,7 +187,7 @@ class RAGEngine:
         distances, indices = self.index.search(vec, k)
 
         results = [
-            self.chunks[idx]
+            (self.chunks[idx], float(dist))
             for idx, dist in zip(indices[0], distances[0])
             if idx != -1 and dist >= threshold
         ]
@@ -266,6 +266,8 @@ class RAGEngine:
         cited = []
 
         # Process the first stream (which might just be conversational text, or a tool call)
+        tool_calls_dict = {}
+        
         async for chunk in resp:
             if not chunk.choices:
                 if chunk.usage:
@@ -276,18 +278,23 @@ class RAGEngine:
             
             if delta.tool_calls:
                 is_tool_call = True
-                tc = delta.tool_calls[0]
-                if tc.id:
-                    tool_call_id = tc.id
-                if tc.function and tc.function.name:
-                    tool_name += tc.function.name
-                    if status_callback:
-                        status_callback({"type": "tool_name", "content": tc.function.name})
-                if tc.function and tc.function.arguments:
-                    arg_chunk = tc.function.arguments
-                    tool_args += arg_chunk
-                    if status_callback:
-                        status_callback({"type": "tool_stream", "content": arg_chunk})
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    if idx not in tool_calls_dict:
+                        tool_calls_dict[idx] = {"id": "", "name": "", "args": ""}
+                        if status_callback:
+                            status_callback({"type": "info", "content": f"\n\n--- Tool Call {idx+1} ---"})
+                    if tc.id:
+                        tool_calls_dict[idx]["id"] = tc.id
+                    if tc.function and tc.function.name:
+                        tool_calls_dict[idx]["name"] += tc.function.name
+                        if status_callback:
+                            status_callback({"type": "tool_name", "content": tc.function.name})
+                    if tc.function and tc.function.arguments:
+                        arg_chunk = tc.function.arguments
+                        tool_calls_dict[idx]["args"] += arg_chunk
+                        if status_callback:
+                            status_callback({"type": "tool_stream", "content": arg_chunk})
             elif not is_tool_call and delta.content:
                 content = delta.content
                 answer += content
@@ -312,56 +319,69 @@ class RAGEngine:
             return answer, cited, stats
 
         # ---------------------------------------------------------
-        # If the LLM decided to call the tool, execute the search!
+        # If the LLM decided to call the tool, execute all searches!
         # ---------------------------------------------------------
-        logger.info("LLM decided to call tool: %s with args: %s", tool_name, tool_args)
-        
-        try:
-            args_dict = json.loads(tool_args)
-            search_query = args_dict.get("query", question)
-        except Exception:
-            search_query = question
-
-        if status_callback:
-            status_callback({"type": "info", "content": f"Executing vector search for: `{search_query}`"})
-
-        # 2. Swap to Embedding Model and search
-        model_manager.require_embedding()
-        
-        chunks = await self.search(search_query)
-        
-        if status_callback:
-            status_callback({"type": "info", "content": f"Found {len(chunks)} relevant document chunks. Generating answer..."})
-
-        # 3. Swap back to LLM to generate the final answer based on tool output
-        model_manager.require_llm()
-
-        if not chunks:
-            tool_result = "I couldn't find any relevant information in the report."
-        else:
-            tool_result = self._build_rag_prompt(search_query, chunks)
-
-        # Append the assistant's tool call request
-        messages.append({
+        # Append the assistant's request with all tool calls
+        assistant_message = {
             "role": "assistant",
             "content": None,
-            "tool_calls": [{
-                "id": tool_call_id if tool_call_id else "call_1",
+            "tool_calls": []
+        }
+        for idx, tc_data in tool_calls_dict.items():
+            assistant_message["tool_calls"].append({
+                "id": tc_data["id"] if tc_data["id"] else f"call_{idx}",
                 "type": "function",
                 "function": {
-                    "name": tool_name,
-                    "arguments": tool_args
+                    "name": tc_data["name"],
+                    "arguments": tc_data["args"]
                 }
-            }]
-        })
-        # Append the tool's result
-        messages.append({
-            "role": "tool",
-            "tool_call_id": tool_call_id if tool_call_id else "call_1",
-            "content": tool_result
-        })
+            })
+        messages.append(assistant_message)
+        
+        # Execute each tool call
+        for idx, tc_data in tool_calls_dict.items():
+            tool_name = tc_data["name"]
+            tool_args = tc_data["args"]
+            tool_id = tc_data["id"] if tc_data["id"] else f"call_{idx}"
+            
+            logger.info("Executing tool %s: %s", tool_name, tool_args)
+            
+            try:
+                args_dict = json.loads(tool_args)
+                search_query = args_dict.get("query", question)
+            except Exception:
+                search_query = question
 
-        # Generate the final response using the tool data
+            if status_callback:
+                status_callback({"type": "info", "content": f"\nExecuting vector search for: `{search_query}`"})
+
+            model_manager.require_embedding()
+            chunks_with_scores = await self.search(search_query)
+            
+            if chunks_with_scores:
+                scores = [score for _, score in chunks_with_scores]
+                max_conf = max(scores)
+                min_conf = min(scores)
+                if status_callback:
+                    status_callback({"type": "info", "content": f"Found {len(chunks_with_scores)} document chunks (Max Confidence: {max_conf:.2f}, Min Confidence: {min_conf:.2f})."})
+                tool_result = self._build_rag_prompt(search_query, chunks_with_scores)
+            else:
+                if status_callback:
+                    status_callback({"type": "info", "content": "Found 0 relevant chunks."})
+                tool_result = "I couldn't find any relevant information in the report."
+
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_id,
+                "content": tool_result
+            })
+            
+        if status_callback:
+            status_callback({"type": "info", "content": "\nAll searches complete. Generating final answer..."})
+
+        # 3. Swap back to LLM to generate the final answer based on tool outputs
+        model_manager.require_llm()
+
         logger.info("Generating final answer from tool output")
         resp2 = await self.llm_client.chat.completions.create(
             model="qwen",
@@ -417,12 +437,12 @@ class RAGEngine:
     # ------------------------------------------------------------------
 
     def _build_rag_prompt(
-        self, question: str, chunks: list[DocumentChunk]
+        self, question: str, chunks_with_scores: list[tuple[DocumentChunk, float]]
     ) -> str:
         parts: list[str] = []
-        for i, c in enumerate(chunks, 1):
+        for i, (c, score) in enumerate(chunks_with_scores, 1):
             pages = ", ".join(str(p) for p in c.page_numbers)
-            parts.append(f"--- Chunk {i} (Pages: {pages}) ---\n{c.text}")
+            parts.append(f"--- Chunk {i} (Pages: {pages}, Relevance: {score:.2f}) ---\n{c.text}")
 
         excerpts = "\n\n".join(parts)
         return (

@@ -195,61 +195,7 @@ class RAGEngine:
         return results
 
     # ------------------------------------------------------------------
-    # Query Analysis & Intent
-    # ------------------------------------------------------------------
-
-    async def analyze_query(
-        self,
-        question: str,
-        chat_history: list[ChatMessage] | None = None,
-    ) -> tuple[str, bool]:
-        """Analyze question: determine if RAG is needed, and rewrite if it is.
-        Returns: (rewritten_query, needs_rag)
-        """
-        history_text = ""
-        if chat_history:
-            history_text = "\n".join(
-                f"{m.role}: {m.content}" for m in chat_history[-5:]
-            )
-            
-        prompt = (
-            "You are an AI assistant routing a user's message.\n"
-            "Determine if the user's message requires searching an annual financial report.\n"
-            "If the message is purely conversational (e.g. 'hello', 'thanks', 'what can you do', 'who are you'), reply with exactly: [NO_RAG]\n\n"
-            "If the message asks for specific data, facts, or analysis that requires a report, rewrite the question into a self-contained, standalone query that includes relevant context from the chat history (if any).\n\n"
-            f"Chat History:\n{history_text if history_text else '(None)'}\n\n"
-            f"User Message: {question}\n"
-            "Output:"
-        )
-
-        try:
-            logger.info("Analyzing query intent")
-            resp = await self.llm_client.chat.completions.create(
-                model="qwen",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a query routing engine. Output strictly [NO_RAG] or the rewritten query.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.0,
-                max_tokens=256,
-                extra_body={"chat_template_kwargs": {"enable_thinking": False}}
-            )
-            result = (resp.choices[0].message.content or "").strip()
-            if "NO_RAG" in result.upper() or not result:
-                logger.info("Query routed to conversational (NO_RAG)")
-                return question, False
-                
-            logger.info("Rewritten query for RAG: %s", result)
-            return result, True
-        except Exception:
-            logger.exception("Query analysis failed, defaulting to RAG")
-            return question, True
-
-    # ------------------------------------------------------------------
-    # Full RAG answer
+    # Full RAG answer using Tool Calling
     # ------------------------------------------------------------------
 
     async def answer_question(
@@ -258,111 +204,200 @@ class RAGEngine:
         chat_history: list[ChatMessage] | None = None,
         stream_callback=None
     ) -> tuple[str, list[int], dict]:
-        """Full RAG pipeline: analyze → optionally retrieve → generate answer."""
+        """Full Agentic RAG pipeline using LLM Tool Calling."""
         from pipeline.model_manager import model_manager
-        
-        # 1. Analyze query (uses LLM)
+        import json
+        import time
+
+        # 1. Start LLM to evaluate query
         model_manager.require_llm()
-        rewritten, needs_rag = await self.analyze_query(question, chat_history)
-        
-        chunks = []
-        if needs_rag:
-            # 2. Search (uses Embedding Model)
-            model_manager.require_embedding()
-            chunks = await self.search(rewritten)
-            
-            # Switch back to LLM for generating answer
-            model_manager.require_llm()
 
-        if needs_rag and not chunks:
-            if stream_callback:
-                stream_callback("I couldn't find any relevant information in the report to answer this question.")
-            return (
-                "I couldn't find any relevant information in the report "
-                "to answer this question.",
-                [],
-                {"total_time": 0.0, "input_tokens": 0, "output_tokens": 0, "speed": 0.0}
-            )
-
-        if needs_rag:
-            prompt = self._build_rag_prompt(question, chunks)
-            system_msg = (
-                "You are an AI assistant answering questions strictly "
-                "from the provided annual report excerpts."
-            )
-        else:
-            prompt = question
-            system_msg = (
-                "You are a helpful AI assistant analyzing an annual report. "
-                "The user just asked a conversational question. Answer naturally."
-            )
-            
-        messages: list[dict[str, str]] = [
-            {
-                "role": "system",
-                "content": system_msg,
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "search_annual_report",
+                "description": "Search the annual report vector database for financial data, subsidiary info, or specific facts. Use this tool whenever the user asks for specific data or facts about the company.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The highly specific standalone search query to look up in the database."
+                        }
+                    },
+                    "required": ["query"]
+                }
             }
-        ]
-        
+        }]
+
+        system_msg = (
+            "You are a helpful AI assistant answering questions about an annual report. "
+            "If the user asks a conversational question, answer naturally. "
+            "If the user asks about facts, figures, or details regarding the company, YOU MUST CALL the `search_annual_report` tool to find the information."
+        )
+
+        messages: list[dict] = [{"role": "system", "content": system_msg}]
         if chat_history:
             for m in chat_history[-5:]:
                 messages.append({"role": m.role, "content": m.content})
-        messages.append({"role": "user", "content": prompt})
+        messages.append({"role": "user", "content": question})
 
-        try:
-            import time
-            start_time = time.perf_counter()
-            logger.info("Generating RAG answer for: %s", rewritten)
-            resp = await self.llm_client.chat.completions.create(
-                model="qwen",
-                messages=messages,
-                temperature=0.2,
-                max_tokens=2048,
-                stream=True,  # Enable streaming
-                stream_options={"include_usage": True},
-                extra_body={"chat_template_kwargs": {"enable_thinking": False}}
-            )
-            
-            answer = ""
-            usage_stats = None
-            async for chunk in resp:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    content = chunk.choices[0].delta.content
-                    answer += content
-                    if stream_callback:
-                        stream_callback(content)
+        start_time = time.perf_counter()
+        
+        logger.info("Sending query to LLM for intent / tool decision")
+        resp = await self.llm_client.chat.completions.create(
+            model="qwen",
+            messages=messages,
+            tools=tools,
+            temperature=0.1,
+            max_tokens=2048,
+            stream=True,
+            stream_options={"include_usage": True},
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}}
+        )
+
+        answer = ""
+        usage_stats = None
+        is_tool_call = False
+        tool_call_id = ""
+        tool_name = ""
+        tool_args = ""
+        cited = []
+
+        # Process the first stream (which might just be conversational text, or a tool call)
+        async for chunk in resp:
+            if not chunk.choices:
                 if chunk.usage:
                     usage_stats = chunk.usage
+                continue
+                
+            delta = chunk.choices[0].delta
+            
+            if delta.tool_calls:
+                is_tool_call = True
+                tc = delta.tool_calls[0]
+                if tc.id:
+                    tool_call_id = tc.id
+                if tc.function and tc.function.name:
+                    tool_name += tc.function.name
+                if tc.function and tc.function.arguments:
+                    tool_args += tc.function.arguments
+            elif not is_tool_call and delta.content:
+                content = delta.content
+                answer += content
+                if stream_callback:
+                    stream_callback(content)
 
+        # If it was a conversational answer (no tool call), we are done!
+        if not is_tool_call:
+            logger.info("LLM answered conversationally without RAG")
             end_time = time.perf_counter()
             total_time = end_time - start_time
-
-            if not answer.strip():
-                if stream_callback:
-                    stream_callback("I was unable to generate an answer from the report.")
-                answer = "I was unable to generate an answer from the report."
-
-            cited = sorted(
-                {int(m) for m in re.findall(r"\[p\.(\d+)\]", answer)}
-            )
-            
-            # Calculate stats
             stats = {
                 "total_time": total_time,
                 "input_tokens": getattr(usage_stats, "prompt_tokens", 0) if usage_stats else 0,
                 "output_tokens": getattr(usage_stats, "completion_tokens", 0) if usage_stats else 0,
             }
-            if stats["total_time"] > 0:
-                stats["speed"] = stats["output_tokens"] / stats["total_time"]
-            else:
-                stats["speed"] = 0.0
-
-            logger.info("Answer generated, %d pages cited", len(cited))
+            stats["speed"] = stats["output_tokens"] / stats["total_time"] if stats["total_time"] > 0 else 0.0
             return answer, cited, stats
 
+        # ---------------------------------------------------------
+        # If the LLM decided to call the tool, execute the search!
+        # ---------------------------------------------------------
+        logger.info("LLM decided to call tool: %s with args: %s", tool_name, tool_args)
+        
+        try:
+            args_dict = json.loads(tool_args)
+            search_query = args_dict.get("query", question)
         except Exception:
-            logger.exception("RAG answer generation failed")
-            raise
+            search_query = question
+
+        # 2. Swap to Embedding Model and search
+        model_manager.require_embedding()
+        if stream_callback:
+            # Let the UI know we are searching
+            pass # UI handles spinner initially, but maybe it disappeared? Streamlit handles UI.
+        
+        chunks = await self.search(search_query)
+        
+        # 3. Swap back to LLM to generate the final answer based on tool output
+        model_manager.require_llm()
+
+        if not chunks:
+            tool_result = "I couldn't find any relevant information in the report."
+        else:
+            tool_result = self._build_rag_prompt(search_query, chunks)
+
+        # Append the assistant's tool call request
+        messages.append({
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": tool_call_id if tool_call_id else "call_1",
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "arguments": tool_args
+                }
+            }]
+        })
+        # Append the tool's result
+        messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call_id if tool_call_id else "call_1",
+            "content": tool_result
+        })
+
+        # Generate the final response using the tool data
+        logger.info("Generating final answer from tool output")
+        resp2 = await self.llm_client.chat.completions.create(
+            model="qwen",
+            messages=messages,
+            temperature=0.2,
+            max_tokens=2048,
+            stream=True,
+            stream_options={"include_usage": True},
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}}
+        )
+
+        answer = ""
+        async for chunk in resp2:
+            if not chunk.choices:
+                if chunk.usage:
+                    if usage_stats:
+                        # Accumulate tokens across both LLM calls
+                        usage_stats.prompt_tokens += chunk.usage.prompt_tokens
+                        usage_stats.completion_tokens += chunk.usage.completion_tokens
+                    else:
+                        usage_stats = chunk.usage
+                continue
+                
+            delta = chunk.choices[0].delta
+            if delta.content:
+                content = delta.content
+                answer += content
+                if stream_callback:
+                    stream_callback(content)
+
+        if not answer.strip():
+            answer = "I was unable to generate an answer from the report."
+            if stream_callback:
+                stream_callback(answer)
+
+        cited = sorted({int(m) for m in re.findall(r"\[p\.(\d+)\]", answer)})
+        logger.info("Answer generated, %d pages cited", len(cited))
+
+        end_time = time.perf_counter()
+        total_time = end_time - start_time
+
+        stats = {
+            "total_time": total_time,
+            "input_tokens": getattr(usage_stats, "prompt_tokens", 0) if usage_stats else 0,
+            "output_tokens": getattr(usage_stats, "completion_tokens", 0) if usage_stats else 0,
+        }
+        stats["speed"] = stats["output_tokens"] / stats["total_time"] if stats["total_time"] > 0 else 0.0
+
+        return answer, cited, stats
 
     # ------------------------------------------------------------------
     # Prompt builder

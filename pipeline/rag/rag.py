@@ -297,6 +297,8 @@ class RAGEngine:
         messages.append({"role": "user", "content": prompt})
 
         try:
+            import time
+            start_time = time.perf_counter()
             logger.info("Generating RAG answer for: %s", rewritten)
             resp = await self.llm_client.chat.completions.create(
                 model="qwen",
@@ -304,16 +306,23 @@ class RAGEngine:
                 temperature=0.2,
                 max_tokens=2048,
                 stream=True,  # Enable streaming
+                stream_options={"include_usage": True},
                 extra_body={"chat_template_kwargs": {"enable_thinking": False}}
             )
             
             answer = ""
+            usage_stats = None
             async for chunk in resp:
-                content = chunk.choices[0].delta.content
-                if content:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    content = chunk.choices[0].delta.content
                     answer += content
                     if stream_callback:
                         stream_callback(content)
+                if chunk.usage:
+                    usage_stats = chunk.usage
+
+            end_time = time.perf_counter()
+            total_time = end_time - start_time
 
             if not answer.strip():
                 if stream_callback:
@@ -323,8 +332,20 @@ class RAGEngine:
             cited = sorted(
                 {int(m) for m in re.findall(r"\[p\.(\d+)\]", answer)}
             )
+            
+            # Calculate stats
+            stats = {
+                "total_time": total_time,
+                "input_tokens": getattr(usage_stats, "prompt_tokens", 0) if usage_stats else 0,
+                "output_tokens": getattr(usage_stats, "completion_tokens", 0) if usage_stats else 0,
+            }
+            if stats["total_time"] > 0:
+                stats["speed"] = stats["output_tokens"] / stats["total_time"]
+            else:
+                stats["speed"] = 0.0
+
             logger.info("Answer generated, %d pages cited", len(cited))
-            return answer, cited
+            return answer, cited, stats
 
         except Exception:
             logger.exception("RAG answer generation failed")

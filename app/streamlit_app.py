@@ -480,6 +480,13 @@ def _render_chat() -> None:
     for msg in st.session_state.chat_history:
         with st.chat_message(msg.role):
             st.markdown(msg.content)
+            if getattr(msg, "stats", None):
+                st.caption(
+                    f"⏱️ {msg.stats['total_time']:.1f}s | "
+                    f"📥 In: {msg.stats['input_tokens']} | "
+                    f"📤 Out: {msg.stats['output_tokens']} | "
+                    f"⚡ {msg.stats['speed']:.1f} t/s"
+                )
 
     # Input
     if question := st.chat_input("Ask a question about the report…"):
@@ -509,8 +516,9 @@ def _render_chat() -> None:
                 full_response.append(chunk)
                 message_placeholder.markdown("".join(full_response) + "▌")
 
+            stats = None
             try:
-                answer, cited_pages = asyncio.run(
+                answer, cited_pages, stats = asyncio.run(
                     rag.answer_question(
                         question,
                         chat_history=st.session_state.chat_history,
@@ -525,11 +533,19 @@ def _render_chat() -> None:
 
             # Finalize output without the cursor
             message_placeholder.markdown(answer)
+            if stats:
+                st.caption(
+                    f"⏱️ {stats['total_time']:.1f}s | "
+                    f"📥 In: {stats['input_tokens']} | "
+                    f"📤 Out: {stats['output_tokens']} | "
+                    f"⚡ {stats['speed']:.1f} t/s"
+                )
 
         asst_msg = ChatMessage(
             role="assistant",
             content=answer,
             citations=cited_pages,
+            stats=stats,
             timestamp=datetime.now(),
         )
         st.session_state.chat_history.append(asst_msg)

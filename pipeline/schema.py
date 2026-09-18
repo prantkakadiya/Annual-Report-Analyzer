@@ -73,6 +73,7 @@ class ChatMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str
     citations: list[int] | None = None
+    stats: dict[str, float] | None = None
     timestamp: datetime
 
 class AnalysisResult(BaseModel):

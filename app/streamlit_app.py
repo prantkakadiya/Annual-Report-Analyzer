@@ -512,16 +512,31 @@ def _render_chat() -> None:
         # 2. If there's a new question, generate the assistant's response below the history
         if question:
             with st.chat_message("assistant"):
-                message_placeholder = st.empty()
                 
-                with st.spinner("Searching report…"):
-                    pass  # The spinner runs while rewrite and search happen
+                # Replace the simple spinner with an advanced status tracker
+                with st.status("🤖 Analyzing intent...", expanded=True) as status_box:
+                    st_tool_placeholder = st.empty()
+                    tool_text = ""
+                    
+                    def on_status(payload: dict):
+                        nonlocal tool_text
+                        if payload["type"] == "tool_name":
+                            status_box.update(label=f"🛠️ Tool Requested: {payload['content']}...")
+                        elif payload["type"] == "tool_stream":
+                            tool_text += payload["content"]
+                            st_tool_placeholder.markdown(f"```json\n{tool_text}\n```")
+                        elif payload["type"] == "info":
+                            status_box.write(payload["content"])
+                        elif payload["type"] == "complete":
+                            status_box.update(label="Analysis Complete", state="complete", expanded=False)
 
+                message_placeholder = st.empty()
                 full_response = []
                 
                 def on_chunk(chunk: str):
                     if not full_response:
-                        message_placeholder.empty() # Clear spinner space
+                        message_placeholder.empty() # Clear if needed
+                        status_box.update(label="Finished", state="complete", expanded=False)
                     full_response.append(chunk)
                     message_placeholder.markdown("".join(full_response) + "▌")
 
@@ -531,7 +546,8 @@ def _render_chat() -> None:
                         rag.answer_question(
                             question,
                             chat_history=st.session_state.chat_history,
-                            stream_callback=on_chunk
+                            stream_callback=on_chunk,
+                            status_callback=on_status
                         )
                     )
                 except Exception as exc:

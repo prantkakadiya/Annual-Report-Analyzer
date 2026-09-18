@@ -202,7 +202,8 @@ class RAGEngine:
         self,
         question: str,
         chat_history: list[ChatMessage] | None = None,
-        stream_callback=None
+        stream_callback=None,
+        status_callback=None
     ) -> tuple[str, list[int], dict]:
         """Full Agentic RAG pipeline using LLM Tool Calling."""
         from pipeline.model_manager import model_manager
@@ -280,8 +281,13 @@ class RAGEngine:
                     tool_call_id = tc.id
                 if tc.function and tc.function.name:
                     tool_name += tc.function.name
+                    if status_callback:
+                        status_callback({"type": "tool_name", "content": tc.function.name})
                 if tc.function and tc.function.arguments:
-                    tool_args += tc.function.arguments
+                    arg_chunk = tc.function.arguments
+                    tool_args += arg_chunk
+                    if status_callback:
+                        status_callback({"type": "tool_stream", "content": arg_chunk})
             elif not is_tool_call and delta.content:
                 content = delta.content
                 answer += content
@@ -291,6 +297,10 @@ class RAGEngine:
         # If it was a conversational answer (no tool call), we are done!
         if not is_tool_call:
             logger.info("LLM answered conversationally without RAG")
+            if status_callback:
+                status_callback({"type": "info", "content": "Answered directly (No RAG search needed)."})
+                status_callback({"type": "complete"})
+            
             end_time = time.perf_counter()
             total_time = end_time - start_time
             stats = {
@@ -312,14 +322,17 @@ class RAGEngine:
         except Exception:
             search_query = question
 
+        if status_callback:
+            status_callback({"type": "info", "content": f"Executing vector search for: `{search_query}`"})
+
         # 2. Swap to Embedding Model and search
         model_manager.require_embedding()
-        if stream_callback:
-            # Let the UI know we are searching
-            pass # UI handles spinner initially, but maybe it disappeared? Streamlit handles UI.
         
         chunks = await self.search(search_query)
         
+        if status_callback:
+            status_callback({"type": "info", "content": f"Found {len(chunks)} relevant document chunks. Generating answer..."})
+
         # 3. Swap back to LLM to generate the final answer based on tool output
         model_manager.require_llm()
 

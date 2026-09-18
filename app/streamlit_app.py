@@ -476,84 +476,88 @@ def _render_chat() -> None:
         )
         return
 
-    # Display history
-    for msg in st.session_state.chat_history:
-        with st.chat_message(msg.role):
-            st.markdown(msg.content)
-            if getattr(msg, "stats", None):
-                st.caption(
-                    f"⏱️ {msg.stats['total_time']:.1f}s | "
-                    f"📥 In: {msg.stats['input_tokens']} | "
-                    f"📤 Out: {msg.stats['output_tokens']} | "
-                    f"⚡ {msg.stats['speed']:.1f} t/s"
-                )
+    # Clear chat button at the top
+    if st.session_state.chat_history:
+        if st.button("🗑️ Clear chat", key="clear_chat_btn"):
+            st.session_state.chat_history = []
+            st.rerun()
 
-    # Input
-    if question := st.chat_input("Ask a question about the report…"):
-        # Show user message
+    # Container to hold all messages above the input
+    chat_container = st.container()
+
+    # Input (always anchors to bottom naturally if below the container)
+    question = st.chat_input("Ask a question about the report…")
+
+    if question:
         user_msg = ChatMessage(
             role="user",
             content=question,
             timestamp=datetime.now(),
         )
         st.session_state.chat_history.append(user_msg)
-        with st.chat_message("user"):
-            st.markdown(question)
 
-        # Generate answer
-        with st.chat_message("assistant"):
-            message_placeholder = st.empty()
-            
-            with st.spinner("Searching report…"):
-                pass  # The spinner runs while rewrite and search happen
-
-            # We use a list to accumulate the string
-            full_response = []
-            
-            def on_chunk(chunk: str):
-                if not full_response:
-                    message_placeholder.empty() # Clear spinner space
-                full_response.append(chunk)
-                message_placeholder.markdown("".join(full_response) + "▌")
-
-            stats = None
-            try:
-                answer, cited_pages, stats = asyncio.run(
-                    rag.answer_question(
-                        question,
-                        chat_history=st.session_state.chat_history,
-                        stream_callback=on_chunk
+    with chat_container:
+        # 1. Render all history (which now includes the new user message if there is one)
+        for msg in st.session_state.chat_history:
+            with st.chat_message(msg.role):
+                st.markdown(msg.content)
+                if getattr(msg, "stats", None):
+                    st.caption(
+                        f"⏱️ {msg.stats['total_time']:.1f}s | "
+                        f"📥 In: {msg.stats['input_tokens']} | "
+                        f"📤 Out: {msg.stats['output_tokens']} | "
+                        f"⚡ {msg.stats['speed']:.1f} t/s"
                     )
-                )
-            except Exception as exc:
-                logger.exception("RAG answer failed")
-                answer = f"⚠️ Error generating answer: {exc}"
-                cited_pages = []
+
+        # 2. If there's a new question, generate the assistant's response below the history
+        if question:
+            with st.chat_message("assistant"):
+                message_placeholder = st.empty()
+                
+                with st.spinner("Searching report…"):
+                    pass  # The spinner runs while rewrite and search happen
+
+                full_response = []
+                
+                def on_chunk(chunk: str):
+                    if not full_response:
+                        message_placeholder.empty() # Clear spinner space
+                    full_response.append(chunk)
+                    message_placeholder.markdown("".join(full_response) + "▌")
+
+                stats = None
+                try:
+                    answer, cited_pages, stats = asyncio.run(
+                        rag.answer_question(
+                            question,
+                            chat_history=st.session_state.chat_history,
+                            stream_callback=on_chunk
+                        )
+                    )
+                except Exception as exc:
+                    logger.exception("RAG answer failed")
+                    answer = f"⚠️ Error generating answer: {exc}"
+                    cited_pages = []
+                    message_placeholder.markdown(answer)
+
+                # Finalize output without the cursor
                 message_placeholder.markdown(answer)
+                if stats:
+                    st.caption(
+                        f"⏱️ {stats['total_time']:.1f}s | "
+                        f"📥 In: {stats['input_tokens']} | "
+                        f"📤 Out: {stats['output_tokens']} | "
+                        f"⚡ {stats['speed']:.1f} t/s"
+                    )
 
-            # Finalize output without the cursor
-            message_placeholder.markdown(answer)
-            if stats:
-                st.caption(
-                    f"⏱️ {stats['total_time']:.1f}s | "
-                    f"📥 In: {stats['input_tokens']} | "
-                    f"📤 Out: {stats['output_tokens']} | "
-                    f"⚡ {stats['speed']:.1f} t/s"
-                )
-
-        asst_msg = ChatMessage(
-            role="assistant",
-            content=answer,
-            citations=cited_pages,
-            stats=stats,
-            timestamp=datetime.now(),
-        )
-        st.session_state.chat_history.append(asst_msg)
-
-    # Clear chat button
-    if st.session_state.chat_history:
-        if st.button("🗑️ Clear chat"):
-            st.session_state.chat_history = []
+            asst_msg = ChatMessage(
+                role="assistant",
+                content=answer,
+                citations=cited_pages,
+                stats=stats,
+                timestamp=datetime.now(),
+            )
+            st.session_state.chat_history.append(asst_msg)
             st.rerun()
 
 

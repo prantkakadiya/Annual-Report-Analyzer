@@ -165,8 +165,8 @@ class RAGEngine:
     # Search
     # ------------------------------------------------------------------
 
-    async def search(self, query: str, top_k: int = 10) -> list[DocumentChunk]:
-        """Embed *query* and return the top-k most similar chunks."""
+    async def search(self, query: str, top_k: int = 10, threshold: float = 0.3) -> list[DocumentChunk]:
+        """Embed *query* and return the top-k chunks that meet the threshold."""
         from pipeline.model_manager import model_manager
         
         if self.index is None or self.index.ntotal == 0:
@@ -189,48 +189,47 @@ class RAGEngine:
         results = [
             self.chunks[idx]
             for idx, dist in zip(indices[0], distances[0])
-            if idx != -1
+            if idx != -1 and dist >= threshold
         ]
-        logger.info("Retrieved %d chunks for query", len(results))
+        logger.info("Retrieved %d chunks (above threshold %.2f) for query", len(results), threshold)
         return results
 
     # ------------------------------------------------------------------
-    # Query rewriting
+    # Query Analysis & Intent
     # ------------------------------------------------------------------
 
-    async def rewrite_query(
+    async def analyze_query(
         self,
         question: str,
         chat_history: list[ChatMessage] | None = None,
-    ) -> str:
-        """Rewrite *question* into a retriever-friendly standalone query.
-
-        Uses the LLM to resolve pronouns, expand abbreviations, and
-        incorporate relevant context from recent chat history.
+    ) -> tuple[str, bool]:
+        """Analyze question: determine if RAG is needed, and rewrite if it is.
+        Returns: (rewritten_query, needs_rag)
         """
-        if not chat_history:
-            return question
-
-        history_text = "\n".join(
-            f"{m.role}: {m.content}" for m in chat_history[-5:]
-        )
+        history_text = ""
+        if chat_history:
+            history_text = "\n".join(
+                f"{m.role}: {m.content}" for m in chat_history[-5:]
+            )
+            
         prompt = (
-            "Given the following chat history and a follow-up question, "
-            "rewrite the follow-up question to be a standalone question "
-            "that captures all necessary context.\n\n"
-            f"Chat History:\n{history_text}\n\n"
-            f"Follow-up Question: {question}\n"
-            "Standalone Question:"
+            "You are an AI assistant routing a user's message.\n"
+            "Determine if the user's message requires searching an annual financial report.\n"
+            "If the message is purely conversational (e.g. 'hello', 'thanks', 'what can you do', 'who are you'), reply with exactly: [NO_RAG]\n\n"
+            "If the message asks for specific data, facts, or analysis that requires a report, rewrite the question into a self-contained, standalone query that includes relevant context from the chat history (if any).\n\n"
+            f"Chat History:\n{history_text if history_text else '(None)'}\n\n"
+            f"User Message: {question}\n"
+            "Output:"
         )
 
         try:
-            logger.info("Rewriting query with chat context")
+            logger.info("Analyzing query intent")
             resp = await self.llm_client.chat.completions.create(
                 model="qwen",
                 messages=[
                     {
                         "role": "system",
-                        "content": "You rewrite questions to be self-contained.",
+                        "content": "You are a query routing engine. Output strictly [NO_RAG] or the rewritten query.",
                     },
                     {"role": "user", "content": prompt},
                 ],
@@ -238,14 +237,16 @@ class RAGEngine:
                 max_tokens=256,
                 extra_body={"chat_template_kwargs": {"enable_thinking": False}}
             )
-            rewritten = (resp.choices[0].message.content or "").strip()
-            if rewritten:
-                logger.info("Rewritten query: %s", rewritten)
-                return rewritten
+            result = (resp.choices[0].message.content or "").strip()
+            if "[NO_RAG]" in result.upper() or not result:
+                logger.info("Query routed to conversational (NO_RAG)")
+                return question, False
+                
+            logger.info("Rewritten query for RAG: %s", result)
+            return result, True
         except Exception:
-            logger.exception("Query rewrite failed – using original")
-
-        return question
+            logger.exception("Query analysis failed, defaulting to RAG")
+            return question, True
 
     # ------------------------------------------------------------------
     # Full RAG answer
@@ -256,41 +257,53 @@ class RAGEngine:
         question: str,
         chat_history: list[ChatMessage] | None = None,
         stream_callback=None
-    ) -> tuple[str, list[int]]:
-        """Full RAG pipeline: rewrite → retrieve → generate answer."""
+    ) -> tuple[str, list[int], dict]:
+        """Full RAG pipeline: analyze → optionally retrieve → generate answer."""
         from pipeline.model_manager import model_manager
         
-        # 1. Rewrite query (uses LLM)
+        # 1. Analyze query (uses LLM)
         model_manager.require_llm()
-        rewritten = await self.rewrite_query(question, chat_history)
+        rewritten, needs_rag = await self.analyze_query(question, chat_history)
         
-        # 2. Search (uses Embedding Model)
-        model_manager.require_embedding()
-        chunks = await self.search(rewritten)
-        
-        # 3. Generate answer (uses LLM)
-        model_manager.require_llm()
+        chunks = []
+        if needs_rag:
+            # 2. Search (uses Embedding Model)
+            model_manager.require_embedding()
+            chunks = await self.search(rewritten)
+            
+            # Switch back to LLM for generating answer
+            model_manager.require_llm()
 
-        if not chunks:
+        if needs_rag and not chunks:
             if stream_callback:
                 stream_callback("I couldn't find any relevant information in the report to answer this question.")
             return (
                 "I couldn't find any relevant information in the report "
                 "to answer this question.",
                 [],
+                {"total_time": 0.0, "input_tokens": 0, "output_tokens": 0, "speed": 0.0}
             )
 
-        prompt = self._build_rag_prompt(question, chunks)
-
+        if needs_rag:
+            prompt = self._build_rag_prompt(question, chunks)
+            system_msg = (
+                "You are an AI assistant answering questions strictly "
+                "from the provided annual report excerpts."
+            )
+        else:
+            prompt = question
+            system_msg = (
+                "You are a helpful AI assistant analyzing an annual report. "
+                "The user just asked a conversational question. Answer naturally."
+            )
+            
         messages: list[dict[str, str]] = [
             {
                 "role": "system",
-                "content": (
-                    "You are an AI assistant answering questions strictly "
-                    "from the provided annual report excerpts."
-                ),
+                "content": system_msg,
             }
         ]
+        
         if chat_history:
             for m in chat_history[-5:]:
                 messages.append({"role": m.role, "content": m.content})

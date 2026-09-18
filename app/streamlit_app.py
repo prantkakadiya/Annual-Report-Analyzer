@@ -541,10 +541,13 @@ def main() -> None:
     # ── Handle manual upload ────────────────────────────────────────
     if upload_bytes and (run_clicked or st.session_state.get("_last_upload") != hash(upload_bytes)):
         st.session_state["_last_upload"] = hash(upload_bytes)
+        
+        # Ensure the directory exists BEFORE trying to create a temp file inside it!
+        Path(f"{DATA_DIR}/downloads").mkdir(parents=True, exist_ok=True)
+        
         tmp = tempfile.NamedTemporaryFile(
             delete=False, suffix=".pdf", dir=f"{DATA_DIR}/downloads"
         )
-        Path(f"{DATA_DIR}/downloads").mkdir(parents=True, exist_ok=True)
         tmp.write(upload_bytes)
         tmp.flush()
         tmp_path = tmp.name

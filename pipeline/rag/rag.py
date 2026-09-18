@@ -238,7 +238,7 @@ class RAGEngine:
                 extra_body={"chat_template_kwargs": {"enable_thinking": False}}
             )
             result = (resp.choices[0].message.content or "").strip()
-            if "[NO_RAG]" in result.upper() or not result:
+            if "NO_RAG" in result.upper() or not result:
                 logger.info("Query routed to conversational (NO_RAG)")
                 return question, False
                 

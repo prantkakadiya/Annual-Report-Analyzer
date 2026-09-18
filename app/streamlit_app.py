@@ -389,33 +389,64 @@ def _render_sidebar() -> tuple[str, bool, bytes | None]:
 # UI — Results tabs
 # ---------------------------------------------------------------------------
 def _render_financials_tab(result: AnalysisResult) -> None:
-    if result.financial_data and result.financial_data.metrics:
-        import pandas as pd
-        rows = []
-        for m in result.financial_data.metrics:
-            rows.append({
-                "Metric": m.name,
-                "CY Consolidated": m.current_year_consolidated,
-                "CY Standalone": m.current_year_standalone,
-                "PY Consolidated": m.previous_year_consolidated,
-                "PY Standalone": m.previous_year_standalone,
-                "Unit": m.unit,
-                "Page": f"[p.{m.page_number}]" if m.page_number else "—",
-                "Notes": m.notes or "",
-            })
-        st.dataframe(
-            pd.DataFrame(rows),
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "CY Consolidated": st.column_config.NumberColumn(format=",.2f"),
-                "CY Standalone": st.column_config.NumberColumn(format=",.2f"),
-                "PY Consolidated": st.column_config.NumberColumn(format=",.2f"),
-                "PY Standalone": st.column_config.NumberColumn(format=",.2f"),
-            },
-        )
-    else:
-        st.info("No financial metrics were extracted.")
+    if not result.financial_data or not result.financial_data.metrics:
+        st.info("No financial metrics extracted.")
+        return
+
+    metrics = result.financial_data.metrics
+
+    # 1. Top Level Dashboard (KPI Cards)
+    def get_kpi(name_keywords: list[str]) -> str:
+        for m in metrics:
+            if any(k.lower() in m.name.lower() for k in name_keywords):
+                val = m.current_year_consolidated or m.current_year_standalone
+                if val is not None:
+                    return f"{val:,.1f} {m.unit}"
+        return "—"
+        
+    rev = get_kpi(["revenue", "total income"])
+    ebitda = get_kpi(["ebitda"])
+    pat = get_kpi(["profit", "pat"])
+    
+    st.markdown("### 🏆 Key Highlights (Current Year)")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Revenue", rev)
+    c2.metric("EBITDA", ebitda)
+    c3.metric("Net Profit (PAT)", pat)
+    
+    st.markdown("---")
+    st.markdown("### 📊 Detailed Financial Metrics")
+    
+    import pandas as pd
+    rows = []
+    for m in metrics:
+        def fmt(val):
+            if val is None:
+                return "—"
+            return f"{val:,.2f}"
+            
+        rows.append({
+            "Metric": f"**{m.name}**",
+            "Unit": m.unit,
+            "CY Consolidated": fmt(m.current_year_consolidated),
+            "CY Standalone": fmt(m.current_year_standalone),
+            "PY Consolidated": fmt(m.previous_year_consolidated),
+            "PY Standalone": fmt(m.previous_year_standalone),
+            "Page": f"[p.{m.page_number}]" if m.page_number else "—",
+            "Notes": m.notes or "—",
+        })
+        
+    df = pd.DataFrame(rows)
+    
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Metric": st.column_config.TextColumn(width="medium"),
+            "Notes": st.column_config.TextColumn(width="large"),
+        },
+    )
 
 def _render_insights_tab(result: AnalysisResult) -> None:
     if result.insights and result.insights.insights:

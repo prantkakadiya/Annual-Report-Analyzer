@@ -132,7 +132,7 @@ async def _run_pipeline(
     # ── Step 7: Financial extraction ────────────────────────────────
     _advance("Extracting financial metrics…")
     extractor = FinancialExtractor(llm_base_url=LLM_BASE_URL)
-    financial_data = await extractor.extract(rag, company_name, fiscal_year)
+    financial_data = await extractor.extract(sections, company_name, fiscal_year)
     status_area.write(
         f"  💰 {len(financial_data.metrics)} metrics extracted"
     )

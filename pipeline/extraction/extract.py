@@ -10,143 +10,179 @@ from pipeline.model_manager import model_manager
 
 logger = logging.getLogger(__name__)
 
-__version__ = "2.0.0"
+__version__ = "3.0.0"
 
 class FinancialExtractor:
-    """Extracts financial metrics using Vector Search (RAG) and LLM."""
+    """Agentic Financial Extractor using Section Slicing and Tool Calling."""
     
     def __init__(self, llm_base_url: str = "http://localhost:8080"):
         self.client = openai.AsyncOpenAI(base_url=f"{llm_base_url}/v1", api_key="not-needed")
         
-    async def extract(self, rag_engine, company_name: str, fiscal_year: str) -> FinancialData:
-        """Main extraction method using Vector Search (RAG)."""
-        logger.info(f"Extracting financial metrics via RAG for {company_name}")
+    async def extract(self, sections: dict[str, SectionContent] | list[str], company_name: str, fiscal_year: str) -> FinancialData:
+        """Main extraction method using Agentic loop per metric."""
+        logger.info(f"Starting Agentic Line-Search Extraction for {company_name}")
         
-        queries = [
-            f"What is the total revenue from operations and total income for {company_name} {fiscal_year}?",
-            f"What is the EBITDA (Earnings Before Interest, Taxes, Depreciation, and Amortization) and EBITDA margin for {company_name} {fiscal_year}?",
-            f"What is the Net Profit, PAT (Profit After Tax), or profit for the year attributable to owners for {company_name} {fiscal_year}?",
-            f"What is the Basic and Diluted Earnings Per Share (EPS) for {company_name} {fiscal_year}?",
-            f"What are the Total Assets reported in the Balance Sheet for {company_name} {fiscal_year}?",
-            f"What are the Total Liabilities reported in the Balance Sheet for {company_name} {fiscal_year}?",
-            f"What is the Debt to Equity ratio or debt-equity ratio for {company_name} {fiscal_year}?",
-            f"What is the Net Cash generated from operating activities or Cash Flow from Operations for {company_name} {fiscal_year}?",
-            f"What is the Return on Equity (ROE) or return on net worth for {company_name} {fiscal_year}?",
-            f"What is the Return on Capital Employed (ROCE) for {company_name} {fiscal_year}?"
+        full_lines = []
+        if isinstance(sections, dict):
+            # Only use targeted financial sections if we want strict section slicing
+            target_sections = ["Balance Sheet", "Statement of Profit & Loss", "Cash Flow Statement", "Financial Highlights", "MD&A"]
+            for sec_name in target_sections:
+                if sec_name in sections:
+                    full_lines.append(f"--- START OF SECTION: {sec_name} ---")
+                    for line in sections[sec_name].text.split('\n'):
+                        full_lines.append(line.strip())
+                    full_lines.append(f"--- END OF SECTION: {sec_name} ---")
+            
+            # If no targeted sections found, fallback to ALL sections
+            if not full_lines:
+                for sec_name, content in sections.items():
+                    for line in content.text.split('\n'):
+                        full_lines.append(line.strip())
+        else:
+            full_lines = sections
+
+        metrics_to_find = [
+            "Revenue (or Total Income, Revenue from Operations)",
+            "EBITDA (Earnings Before Interest, Taxes, Depreciation, and Amortization) and EBITDA margin",
+            "Net Profit (or PAT, Profit for the year, Profit After Tax, Loss for the year)",
+            "Basic and Diluted EPS (Earnings Per Share)",
+            "Total Assets",
+            "Total Liabilities",
+            "Debt/Equity ratio",
+            "Cash Flow from Operations (or Net Cash from Operating Activities)",
+            "ROE (Return on Equity, return on net worth)",
+            "ROCE (Return on Capital Employed)"
         ]
 
-        model_manager.require_embedding()
-
-        unique_chunks = {}
-        for q in queries:
-            try:
-                # Limit to 3 documents per query
-                results = await rag_engine.search(q, top_k=3)
-                for chunk, score in results:
-                    if chunk.chunk_id not in unique_chunks:
-                        unique_chunks[chunk.chunk_id] = chunk
-            except Exception as e:
-                logger.exception(f"RAG search failed for query: {q}")
-
-        combined_text = ""
-        for i, chunk in enumerate(unique_chunks.values(), 1):
-            pages = ", ".join(str(p) for p in chunk.page_numbers)
-            combined_text += f"\n--- Excerpt {i} (Pages: {pages}) ---\n{chunk.text}\n"
-
-        if not combined_text.strip():
-            logger.warning("No relevant chunks found for financial metrics.")
-            return FinancialData(
-                company_name=company_name,
-                fiscal_year=fiscal_year,
-                metrics=[],
-                extraction_timestamp=datetime.utcnow()
-            )
-
-        model_manager.require_llm()
-        metrics = await self._extract_from_text(combined_text, company_name, fiscal_year)
+        all_metrics = []
         
+        # Ensure LLM is running for agent loop
+        model_manager.require_llm()
+
+        for metric_desc in metrics_to_find:
+            metric_result = await self._agentic_find_metric(metric_desc, full_lines, company_name, fiscal_year)
+            if metric_result:
+                all_metrics.append(metric_result)
+
         return FinancialData(
             company_name=company_name,
             fiscal_year=fiscal_year,
-            metrics=metrics,
+            metrics=all_metrics,
             extraction_timestamp=datetime.utcnow()
         )
         
-    async def _extract_from_text(self, text_context: str, company_name: str, fiscal_year: str) -> list[FinancialMetric]:
-        prompt = self._build_extraction_prompt(text_context, company_name, fiscal_year)
-        schema = self._get_json_schema()
+    async def _agentic_find_metric(self, metric_desc: str, full_lines: list[str], company_name: str, fiscal_year: str) -> FinancialMetric | None:
+        logger.info(f"Agent actively searching for metric: {metric_desc}")
         
-        system_prompt = """You are a meticulous financial auditor extracting quantitative data from a pool of fragmented document excerpts.
-Your task is to populate a strict JSON structure.
-IMPORTANT RULES:
-1. ONLY use the provided excerpts. Do not hallucinate or use outside knowledge.
-2. If a specific metric is completely missing from the excerpts, set its values to `null`.
-3. Distinguish carefully between 'consolidated' and 'standalone' figures.
-4. If a number is given in millions or billions, do not convert the raw number, just specify the unit exactly as written (e.g. 'USD Million', 'INR Crore').
-5. Output ONLY valid JSON matching the schema."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_lines",
+                    "description": "Search the report sections for a keyword. Returns matching lines along with 8 lines of context above and below.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "keyword": {
+                                "type": "string",
+                                "description": "The exact keyword or short/full phrase to search for."
+                            }
+                        },
+                        "required": ["keyword"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "submit_metric",
+                    "description": "Submit the extracted data once you have confidently found it.",
+                    "parameters": self._get_json_schema()["properties"]["metrics"]["items"]
+                }
+            }
+        ]
 
-        try:
-            logger.info("Attempting final LLM extraction from pooled RAG context")
-            response = await self.client.chat.completions.create(
-                model="qwen",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt}
-                ],
-                response_format={"type": "json_schema", "json_schema": {"name": "financial_extraction", "schema": schema, "strict": True}},
-                temperature=0.0,
-                max_tokens=3000,
-                extra_body={"chat_template_kwargs": {"enable_thinking": False}}
-            )
-            
-            usage = response.usage
-            if usage:
-                logger.info(f"Tokens used - prompt: {usage.prompt_tokens}, completion: {usage.completion_tokens}, total: {usage.total_tokens}")
-            
-            content = response.choices[0].message.content
-            if not content:
-                logger.error("Empty response from LLM")
-                return []
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    f"You are an autonomous financial auditor. Your specific goal right now is to extract this exact metric for {company_name} ({fiscal_year}):\n"
+                    f"**{metric_desc}**\n\n"
+                    "RULES:\n"
+                    "1. Use the `search_lines` tool repeatedly to explore the document. Try short forms (e.g., 'ROE', 'PAT') and full forms (e.g., 'Return on Equity').\n"
+                    "2. When you find the exact numbers in the search results, use the `submit_metric` tool to submit the data and exit.\n"
+                    "3. If you search 3-4 times and still cannot find the metric, use `submit_metric` with null values to give up.\n"
+                    "4. Output must distinguish between consolidated and standalone if specified.\n"
+                    "5. Do NOT convert units. If it says '` Million', write that exactly as the unit."
+                )
+            }
+        ]
+
+        extracted_metric = None
+        
+        # Give the agent a maximum of 5 turns to search and submit
+        for turn in range(5):
+            try:
+                response = await self.client.chat.completions.create(
+                    model="qwen",
+                    messages=messages,
+                    tools=tools,
+                    temperature=0.0
+                )
                 
-            data = json.loads(content)
-            
-            metrics = []
-            for item in data.get("metrics", []):
-                try:
-                    metric = FinancialMetric(**item)
-                    metrics.append(metric)
-                except ValidationError as ve:
-                    logger.exception("Validation error for extracted metric")
-            return metrics
-            
-        except Exception as e:
-            logger.exception("Error during LLM extraction call")
-            raise e
-            
-    def _build_extraction_prompt(self, text_context: str, company_name: str, fiscal_year: str) -> str:
-        return f"""
-Please extract the following financial metrics for {company_name} ({fiscal_year}) from the provided excerpts:
-- Revenue
-- EBITDA and EBITDA margin
-- Net Profit / PAT
-- EPS (Basic and Diluted)
-- Total Assets
-- Total Liabilities
-- Debt/Equity ratio
-- Cash Flow from Operations
-- ROE
-- ROCE
-
-Rules:
-1. Extract EXACT numbers as reported. Do not convert units.
-2. Include page numbers for EVERY value based on the page markers in the text (e.g., Pages: 45).
-3. Distinguish between consolidated and standalone figures.
-4. Extract both current year and previous year values.
-5. If a ratio is reported directly, use that. Otherwise, note in the 'notes' field that it should be computed.
-
-Excerpts:
-{text_context}
-"""
+                msg = response.choices[0].message
+                messages.append(msg)
+                
+                if not msg.tool_calls:
+                    # If it didn't call a tool, force a break
+                    break
+                    
+                for tc in msg.tool_calls:
+                    if tc.function.name == "search_lines":
+                        args = json.loads(tc.function.arguments)
+                        keyword = args.get("keyword", "").strip()
+                        
+                        logger.info(f"Agent exploring keyword: '{keyword}'")
+                        
+                        results = []
+                        if keyword:
+                            for i, line in enumerate(full_lines):
+                                if keyword.lower() in line.lower():
+                                    start = max(0, i - 8)
+                                    end = min(len(full_lines), i + 9)
+                                    snippet = "\n".join(full_lines[start:end])
+                                    
+                                    # Prevent duplicate snippets
+                                    if not any(snippet in r for r in results):
+                                        results.append(snippet)
+                        
+                        if not results:
+                            tool_result = f"No matches found for '{keyword}'. Try a different short form or full form."
+                        else:
+                            # Limit to top 3 matches to avoid blowing up context window
+                            tool_result = f"Found {len(results)} matches. Showing top 3:\n\n" + "\n\n---\n\n".join(results[:3])
+                        
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": tool_result
+                        })
+                        
+                    elif tc.function.name == "submit_metric":
+                        args = json.loads(tc.function.arguments)
+                        try:
+                            # Clean up the name to avoid passing the giant description string
+                            args["name"] = metric_desc.split("(")[0].strip()
+                            extracted_metric = FinancialMetric(**args)
+                        except Exception as e:
+                            logger.error(f"Failed to parse submitted metric: {e}")
+                        
+                        return extracted_metric
+            except Exception as e:
+                logger.exception("Agent loop encountered an error")
+                break
+                
+        return extracted_metric
 
     def _get_json_schema(self) -> dict:
         return {

@@ -255,6 +255,7 @@ class RAGEngine:
         self,
         question: str,
         chat_history: list[ChatMessage] | None = None,
+        stream_callback=None
     ) -> tuple[str, list[int]]:
         """Full RAG pipeline: rewrite → retrieve → generate answer."""
         from pipeline.model_manager import model_manager
@@ -271,6 +272,8 @@ class RAGEngine:
         model_manager.require_llm()
 
         if not chunks:
+            if stream_callback:
+                stream_callback("I couldn't find any relevant information in the report to answer this question.")
             return (
                 "I couldn't find any relevant information in the report "
                 "to answer this question.",
@@ -300,10 +303,21 @@ class RAGEngine:
                 messages=messages,
                 temperature=0.2,
                 max_tokens=2048,
+                stream=True,  # Enable streaming
                 extra_body={"chat_template_kwargs": {"enable_thinking": False}}
             )
-            answer = resp.choices[0].message.content or ""
+            
+            answer = ""
+            async for chunk in resp:
+                content = chunk.choices[0].delta.content
+                if content:
+                    answer += content
+                    if stream_callback:
+                        stream_callback(content)
+
             if not answer.strip():
+                if stream_callback:
+                    stream_callback("I was unable to generate an answer from the report.")
                 answer = "I was unable to generate an answer from the report."
 
             cited = sorted(

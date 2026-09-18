@@ -495,20 +495,36 @@ def _render_chat() -> None:
 
         # Generate answer
         with st.chat_message("assistant"):
+            message_placeholder = st.empty()
+            
             with st.spinner("Searching report…"):
-                try:
-                    answer, cited_pages = asyncio.run(
-                        rag.answer_question(
-                            question,
-                            chat_history=st.session_state.chat_history,
-                        )
-                    )
-                except Exception as exc:
-                    logger.exception("RAG answer failed")
-                    answer = f"⚠️ Error generating answer: {exc}"
-                    cited_pages = []
+                pass  # The spinner runs while rewrite and search happen
 
-            st.markdown(answer)
+            # We use a list to accumulate the string
+            full_response = []
+            
+            def on_chunk(chunk: str):
+                if not full_response:
+                    message_placeholder.empty() # Clear spinner space
+                full_response.append(chunk)
+                message_placeholder.markdown("".join(full_response) + "▌")
+
+            try:
+                answer, cited_pages = asyncio.run(
+                    rag.answer_question(
+                        question,
+                        chat_history=st.session_state.chat_history,
+                        stream_callback=on_chunk
+                    )
+                )
+            except Exception as exc:
+                logger.exception("RAG answer failed")
+                answer = f"⚠️ Error generating answer: {exc}"
+                cited_pages = []
+                message_placeholder.markdown(answer)
+
+            # Finalize output without the cursor
+            message_placeholder.markdown(answer)
 
         asst_msg = ChatMessage(
             role="assistant",

@@ -29,4 +29,4 @@ fi
 echo "Starting LLM server with model: $MODEL"
 echo "Using llama-server: $LLAMA_SERVER"
 
-exec "$LLAMA_SERVER" -m "$MODEL" -ngl 18 -c 8192 -fa on -ctk q8_0 -ctv q8_0 --port 8080
+exec "$LLAMA_SERVER" -m "$MODEL" -ngl 18 -fa on -ctk q8_0 -ctv q8_0 --port 8080

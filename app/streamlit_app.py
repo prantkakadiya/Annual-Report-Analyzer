@@ -500,6 +500,10 @@ def _render_chat() -> None:
         # 1. Render all history (which now includes the new user message if there is one)
         for msg in st.session_state.chat_history:
             with st.chat_message(msg.role):
+                if getattr(msg, "tool_logs", None):
+                    with st.status("🤖 Analysis Details", expanded=False):
+                        for log_str in msg.tool_logs:
+                            st.markdown(log_str)
                 st.markdown(msg.content)
                 if getattr(msg, "stats", None):
                     st.caption(
@@ -517,16 +521,21 @@ def _render_chat() -> None:
                 with st.status("🤖 Analyzing intent...", expanded=True) as status_box:
                     st_tool_placeholder = st.empty()
                     tool_text = ""
+                    current_tool_logs = []
                     
                     def on_status(payload: dict):
                         nonlocal tool_text
                         if payload["type"] == "tool_name":
-                            status_box.update(label=f"🛠️ Tool Requested: {payload['content']}...")
+                            msg_str = f"🛠️ Tool Requested: {payload['content']}..."
+                            status_box.update(label=msg_str)
+                            current_tool_logs.append(f"**{msg_str}**")
                         elif payload["type"] == "tool_stream":
                             tool_text += payload["content"]
                             st_tool_placeholder.markdown(f"```json\n{tool_text}\n```")
                         elif payload["type"] == "info":
-                            status_box.write(payload["content"])
+                            msg_str = payload["content"]
+                            status_box.write(msg_str)
+                            current_tool_logs.append(msg_str)
                         elif payload["type"] == "complete":
                             status_box.update(label="Analysis Complete", state="complete", expanded=False)
 
@@ -550,6 +559,8 @@ def _render_chat() -> None:
                             status_callback=on_status
                         )
                     )
+                    if tool_text:
+                        current_tool_logs.append(f"```json\n{tool_text}\n```")
                 except Exception as exc:
                     logger.exception("RAG answer failed")
                     answer = f"⚠️ Error generating answer: {exc}"
@@ -571,6 +582,7 @@ def _render_chat() -> None:
                 content=answer,
                 citations=cited_pages,
                 stats=stats,
+                tool_logs=current_tool_logs,
                 timestamp=datetime.now(),
             )
             st.session_state.chat_history.append(asst_msg)

@@ -359,11 +359,11 @@ class RAGEngine:
             chunks_with_scores = await self.search(search_query)
             
             if chunks_with_scores:
-                scores = [score for _, score in chunks_with_scores]
-                max_conf = max(scores)
-                min_conf = min(scores)
                 if status_callback:
-                    status_callback({"type": "info", "content": f"Found {len(chunks_with_scores)} document chunks (Max Confidence: {max_conf:.2f}, Min Confidence: {min_conf:.2f})."})
+                    status_callback({"type": "info", "content": f"Found {len(chunks_with_scores)} relevant document chunks:"})
+                    for chunk, score in chunks_with_scores:
+                        pages = ", ".join(str(p) for p in chunk.page_numbers)
+                        status_callback({"type": "info", "content": f" - Pages [{pages}]: {score:.3f} relevance"})
                 tool_result = self._build_rag_prompt(search_query, chunks_with_scores)
             else:
                 if status_callback:

@@ -74,6 +74,7 @@ class ChatMessage(BaseModel):
     content: str
     citations: list[int] | None = None
     stats: dict[str, float] | None = None
+    tool_logs: list[str] | None = None
     timestamp: datetime
 
 class AnalysisResult(BaseModel):

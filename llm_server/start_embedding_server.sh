@@ -6,8 +6,8 @@ LLAMA_SERVER="${LLAMA_SERVER_PATH:-}"
 if [ -z "$LLAMA_SERVER" ]; then
     if command -v llama-server &> /dev/null; then
         LLAMA_SERVER="llama-server"
-    elif [ -x "/home/prant/llama.cpp/build/bin/llama-server" ]; then
-        LLAMA_SERVER="/home/prant/llama.cpp/build/bin/llama-server"
+    elif [ -x "$HOME/llama.cpp/build/bin/llama-server" ]; then
+        LLAMA_SERVER="$HOME/llama.cpp/build/bin/llama-server"
     else
         echo "Error: llama-server not found."
         echo "Please set LLAMA_SERVER_PATH or install llama.cpp"

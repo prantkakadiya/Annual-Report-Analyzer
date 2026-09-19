@@ -6,15 +6,28 @@ from pydantic import ValidationError
 
 from pipeline.schema import InsightData, Insight
 from pipeline.parsing.sections import SectionContent
+from pipeline.config import LLM_BASE_URL as DEFAULT_LLM_URL, LLM_MODEL
 
 logger = logging.getLogger(__name__)
+
+_INSIGHT_SYSTEM_PROMPT = """You are a financial analyst expert in extracting business insights from annual reports. Output only valid JSON.
+Example output:
+{
+  "insights": [
+    {
+      "category": "Sector / industry classification",
+      "content": "The company operates primarily in the IT services and consulting sector.",
+      "page_numbers": [12, 14]
+    }
+  ]
+}"""
 
 
 
 class InsightGenerator:
     """Generates narrative insights using LLM."""
     
-    def __init__(self, llm_base_url: str = "http://localhost:8080"):
+    def __init__(self, llm_base_url: str = DEFAULT_LLM_URL):
         self.client = openai.AsyncOpenAI(base_url=f"{llm_base_url}/v1", api_key="not-needed")
         
     async def generate(self, sections: dict[str, SectionContent], company_name: str, fiscal_year: str) -> InsightData:
@@ -84,24 +97,12 @@ class InsightGenerator:
             "additionalProperties": False
         }
         
-        system_prompt = """You are a financial analyst expert in extracting business insights from annual reports. Output only valid JSON.
-Example output:
-{
-  "insights": [
-    {
-      "category": "Sector / industry classification",
-      "content": "The company operates primarily in the IT services and consulting sector.",
-      "page_numbers": [12, 14]
-    }
-  ]
-}"""
-
         try:
             logger.info(f"Generating insights for {company_name} - Category: {category}")
             response = await self.client.chat.completions.create(
-                model="qwen",
+                model=LLM_MODEL,
                 messages=[
-                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": _INSIGHT_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
                 ],
                 response_format={"type": "json_schema", "json_schema": {"name": "insight_generation", "schema": schema, "strict": True}},

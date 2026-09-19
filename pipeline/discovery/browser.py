@@ -6,6 +6,7 @@ import logging
 import os
 from pathlib import Path
 from urllib.parse import urlparse
+from typing import Callable
 
 import httpx
 from playwright.async_api import async_playwright
@@ -31,7 +32,7 @@ class ReportDownloader:
         logger.info("Download directory: %s", self.download_dir)
 
     async def download_from_candidates(
-        self, candidates: list[SearchCandidate], company_name: str, progress_callback=None
+        self, candidates: list[SearchCandidate], company_name: str, progress_callback: Callable[[int, int], None] | None = None
     ) -> list[tuple[SearchCandidate, str]]:
         """Try each candidate in score order, return successful downloads.
 
@@ -57,7 +58,7 @@ class ReportDownloader:
             )
         return results
 
-    async def _try_download(self, candidate: SearchCandidate, progress_callback=None) -> str | None:
+    async def _try_download(self, candidate: SearchCandidate, progress_callback: Callable[[int, int], None] | None = None) -> str | None:
         """Try direct download first if it looks like a PDF, fallback to Playwright browser download."""
         parsed_url = urlparse(candidate.url.strip())
         is_pdf_path = parsed_url.path.lower().endswith(".pdf")
@@ -75,7 +76,7 @@ class ReportDownloader:
     # ------------------------------------------------------------------
 
     async def _try_direct_download(
-        self, url: str, progress_callback=None
+        self, url: str, progress_callback: Callable[[int, int], None] | None = None
     ) -> str | None:
         """Download a direct PDF link with httpx."""
         logger.info("Direct download: %s", url)

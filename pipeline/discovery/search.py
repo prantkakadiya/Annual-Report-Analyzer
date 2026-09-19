@@ -8,17 +8,37 @@ from dotenv import load_dotenv
 from tavily import TavilyClient
 
 from pipeline.schema import SearchCandidate
+from pipeline.config import LLM_BASE_URL as DEFAULT_LLM_URL, LLM_MODEL
 
 logger = logging.getLogger(__name__)
 
 load_dotenv()
+
+_RANKING_SYSTEM_PROMPT = "You are an expert financial researcher picking the most likely official Annual Report PDF url for a company."
+_RANKING_USER_TEMPLATE = """
+        Company: {company_name}
+        Fiscal Year: {fiscal_year}
+        
+        Search Results:
+        {candidates_json}
+        
+        Analyze the search results. Your goal is to select the BEST URL that points to the official Annual Report published by the company.
+        Prioritize results where `is_direct_pdf` is true and the domain appears official or is a recognized stock exchange (e.g., bseindia.com).
+        
+        Return a JSON object ranking the best candidate IDs in order of preference (best first).
+        Example output:
+        {{
+            "ranked_ids": [3, 0, 4],
+            "reason": "ID 3 is the official direct PDF for the 2024 annual report. ID 0 is a backup exchange link."
+        }}
+        """
 
 
 
 class ReportSearcher:
     """Searches for annual report PDFs using Tavily."""
     
-    def __init__(self, api_key: str | None = None, llm_base_url: str = "http://localhost:8080"):
+    def __init__(self, api_key: str | None = None, llm_base_url: str = DEFAULT_LLM_URL):
         self.api_key = api_key or os.getenv("TAVILY_API_KEY")
         if not self.api_key:
             logger.error("TAVILY_API_KEY not provided or found in environment.")
@@ -107,24 +127,11 @@ class ReportSearcher:
                 "is_direct_pdf": c.is_direct_pdf
             })
             
-        system_prompt = "You are an expert financial researcher picking the most likely official Annual Report PDF url for a company."
-        prompt = f"""
-        Company: {company_name}
-        Fiscal Year: {fiscal_year or 'Latest'}
-        
-        Search Results:
-        {json.dumps(candidates_json, indent=2)}
-        
-        Analyze the search results. Your goal is to select the BEST URL that points to the official Annual Report published by the company.
-        Prioritize results where `is_direct_pdf` is true and the domain appears official or is a recognized stock exchange (e.g., bseindia.com).
-        
-        Return a JSON object ranking the best candidate IDs in order of preference (best first).
-        Example output:
-        {{
-            "ranked_ids": [3, 0, 4],
-            "reason": "ID 3 is the official direct PDF for the 2024 annual report. ID 0 is a backup exchange link."
-        }}
-        """
+        prompt = _RANKING_USER_TEMPLATE.format(
+            company_name=company_name,
+            fiscal_year=fiscal_year or 'Latest',
+            candidates_json=json.dumps(candidates_json, indent=2)
+        )
         
         schema = {
             "type": "object",
@@ -142,9 +149,9 @@ class ReportSearcher:
         try:
             logger.info("Asking LLM to rank search candidates...")
             response = await self.llm_client.chat.completions.create(
-                model="qwen",
+                model=LLM_MODEL,
                 messages=[
-                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": _RANKING_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
                 ],
                 response_format={"type": "json_schema", "json_schema": {"name": "rank_candidates", "schema": schema, "strict": True}},

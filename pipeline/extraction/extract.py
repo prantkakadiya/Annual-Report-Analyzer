@@ -8,8 +8,59 @@ from pydantic import ValidationError
 from pipeline.schema import FinancialData, FinancialMetric
 from pipeline.parsing.sections import SectionContent
 from pipeline.model_manager import model_manager
+from pipeline.config import LLM_BASE_URL as DEFAULT_LLM_URL, LLM_MODEL
 
 logger = logging.getLogger(__name__)
+
+_EXTRACTION_SYSTEM_PROMPT = """You are a financial-document extraction agent.
+You are given a text representation of a financial report. The document has numbered lines.
+Your job is to extract ONE PRIMARY METRIC requested by the controller.
+You have access to document-search and document-reading tools. You do not have access to the internet and must rely only on the supplied document.
+
+EVIDENCE
+Only submit a metric when the document provides sufficient evidence.
+Verify, whenever possible: metric name, reporting period, values, unit, and consolidated context.
+Do not guess. Do not calculate a value unless explicitly required.
+Extract values exactly as shown (do not convert units).
+Extract CONSOLIDATED data only unless specified otherwise.
+
+SEARCHING & READING
+- Start with likely exact terms and useful aliases (e.g., for Net Profit, search ['Net profit', 'Profit for the year', 'PAT']).
+- Use the smallest number of searches necessary.
+- Use `read_lines` when the search result does not contain enough context (max 250 lines).
+
+SUBMISSION
+- Use `submit_metric` to submit findings. Include exact line ranges for evidence provenance.
+- Do not waste tool calls searching for page numbers.
+
+BEHAVIOR
+Be focused and economical. Do not explore the document generally.
+Do not produce a final natural-language answer. Continue using tools until the primary metric is submitted or the search is exhausted.
+FIND → VERIFY → SUBMIT THE PRIMARY TARGET → STOP."""
+
+_EXTRACTION_USER_TEMPLATE = """Company: {company_name}
+Fiscal year: {fiscal_year}
+
+PRIMARY TARGET:
+{primary_metric}
+
+Your highest-priority objective is to find reliable evidence for this metric and submit it as submission_type: "primary".
+The task is complete as soon as the PRIMARY TARGET has been successfully submitted.
+
+PRIORITY:
+1. Find the PRIMARY TARGET.
+2. While searching for the PRIMARY TARGET, opportunistically submit other requested metrics if they appear in the same evidence you are already examining (as submission_type: "secondary").
+3. Never search specifically for secondary metrics.
+4. Never continue searching after the PRIMARY TARGET has been successfully submitted.
+
+WHAT COUNTS AS AN OPPORTUNISTIC DISCOVERY:
+If the PRIMARY TARGET is Revenue, and you find a table containing Revenue, EBITDA, and Profit After Tax, you may submit all three because they were found in the same evidence.
+However, if Revenue is not found, you must NOT start searching separately for EBITDA or Profit After Tax.
+
+Other metrics that may be submitted ONLY if naturally encountered while completing the primary target:
+{missing_text}
+
+Begin by searching the document for the primary target."""
 
 
 
@@ -34,10 +85,10 @@ def is_primary_submission(name: str, primary_metric: str) -> bool:
 class FinancialExtractor:
     """Agentic Financial Extractor using Section Slicing and Tool Calling."""
     
-    def __init__(self, llm_base_url: str = "http://localhost:8080"):
+    def __init__(self, llm_base_url: str = DEFAULT_LLM_URL):
         self.client = openai.AsyncOpenAI(base_url=f"{llm_base_url}/v1", api_key="not-needed")
         
-    async def extract(self, sections: dict[str, SectionContent] | list[str], company_name: str, fiscal_year: str, log_callback: Callable[[str], None] = None) -> FinancialData:
+    async def extract(self, sections: dict[str, SectionContent] | list[str], company_name: str, fiscal_year: str, log_callback: Callable[[str], None] | None = None) -> FinancialData:
         """Main extraction method using Agentic loop per metric."""
         logger.info(f"Starting Agentic Line-Search Extraction for {company_name}")
         if log_callback: log_callback("Starting Agentic Extraction...")
@@ -102,7 +153,7 @@ class FinancialExtractor:
             extraction_timestamp=datetime.utcnow()
         )
         
-    async def _agentic_find_metric(self, primary_metric: str, other_metrics: list[str], full_lines: list[str], company_name: str, fiscal_year: str, log_callback: Callable[[str], None] = None) -> list[FinancialMetric]:
+    async def _agentic_find_metric(self, primary_metric: str, other_metrics: list[str], full_lines: list[str], company_name: str, fiscal_year: str, log_callback: Callable[[str], None] | None = None) -> list[FinancialMetric]:
         tools = [
             {
                 "type": "function",
@@ -176,58 +227,15 @@ class FinancialExtractor:
 
         missing_text = "\n".join([f"- {m}" for m in other_metrics])
         
-        system_prompt = """You are a financial-document extraction agent.
-You are given a text representation of a financial report. The document has numbered lines.
-Your job is to extract ONE PRIMARY METRIC requested by the controller.
-You have access to document-search and document-reading tools. You do not have access to the internet and must rely only on the supplied document.
-
-EVIDENCE
-Only submit a metric when the document provides sufficient evidence.
-Verify, whenever possible: metric name, reporting period, values, unit, and consolidated context.
-Do not guess. Do not calculate a value unless explicitly required.
-Extract values exactly as shown (do not convert units).
-Extract CONSOLIDATED data only unless specified otherwise.
-
-SEARCHING & READING
-- Start with likely exact terms and useful aliases (e.g., for Net Profit, search ['Net profit', 'Profit for the year', 'PAT']).
-- Use the smallest number of searches necessary.
-- Use `read_lines` when the search result does not contain enough context (max 250 lines).
-
-SUBMISSION
-- Use `submit_metric` to submit findings. Include exact line ranges for evidence provenance.
-- Do not waste tool calls searching for page numbers.
-
-BEHAVIOR
-Be focused and economical. Do not explore the document generally.
-Do not produce a final natural-language answer. Continue using tools until the primary metric is submitted or the search is exhausted.
-FIND → VERIFY → SUBMIT THE PRIMARY TARGET → STOP."""
-
-        user_prompt = f"""Company: {company_name}
-Fiscal year: {fiscal_year}
-
-PRIMARY TARGET:
-{primary_metric}
-
-Your highest-priority objective is to find reliable evidence for this metric and submit it as submission_type: "primary".
-The task is complete as soon as the PRIMARY TARGET has been successfully submitted.
-
-PRIORITY:
-1. Find the PRIMARY TARGET.
-2. While searching for the PRIMARY TARGET, opportunistically submit other requested metrics if they appear in the same evidence you are already examining (as submission_type: "secondary").
-3. Never search specifically for secondary metrics.
-4. Never continue searching after the PRIMARY TARGET has been successfully submitted.
-
-WHAT COUNTS AS AN OPPORTUNISTIC DISCOVERY:
-If the PRIMARY TARGET is Revenue, and you find a table containing Revenue, EBITDA, and Profit After Tax, you may submit all three because they were found in the same evidence.
-However, if Revenue is not found, you must NOT start searching separately for EBITDA or Profit After Tax.
-
-Other metrics that may be submitted ONLY if naturally encountered while completing the primary target:
-{missing_text}
-
-Begin by searching the document for the primary target."""
+        user_prompt = _EXTRACTION_USER_TEMPLATE.format(
+            company_name=company_name,
+            fiscal_year=fiscal_year,
+            primary_metric=primary_metric,
+            missing_text=missing_text
+        )
 
         messages = [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": _EXTRACTION_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt}
         ]
 
@@ -237,7 +245,7 @@ Begin by searching the document for the primary target."""
         for turn in range(12):
             try:
                 response = await self.client.chat.completions.create(
-                    model="qwen",
+                    model=LLM_MODEL,
                     messages=messages,
                     tools=tools,
                     temperature=0.0

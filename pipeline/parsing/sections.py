@@ -91,7 +91,7 @@ class SectionSplitter:
 
         Args:
             parsed_report: Output of ``ReportParser.parse()``.
-            rag_index: An optional ``RAGEngine`` instance used for
+            rag_index: An optional ``RAGIndex`` instance used for
                 the semantic fallback when a section heading cannot
                 be found by regex.
 

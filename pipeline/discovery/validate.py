@@ -7,7 +7,45 @@ import pymupdf4llm
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
+from pipeline.config import LLM_BASE_URL as DEFAULT_LLM_URL, LLM_MODEL
+
 logger = logging.getLogger(__name__)
+
+_VALIDATION_SYSTEM_PROMPT = """You are a helpful assistant that outputs only valid JSON.
+Example output:
+{
+  "is_annual_report": true,
+  "company_match": true,
+  "detected_company": "Infosys Limited",
+  "fiscal_year": "2023-24",
+  "confidence": 0.95,
+  "reason": "The text clearly mentions 'Annual Report 2023-24' for 'Infosys'."
+}"""
+
+_VALIDATION_USER_TEMPLATE = """
+        You are an expert financial document validator. Analyze the following text extracted from the first pages of a document.
+        
+        Text:
+        {text}  # Limit text length just in case
+        
+        Determine if this document is an Annual Report {target_check}.
+        
+        CRITICAL INSTRUCTION FOR FINDING COMPANY NAME: 
+        The company name will rarely be explicitly labeled like "Company Name: XYZ". 
+        You must be smart and deduce the company name from context clues on the cover page or table of contents. 
+        Look for large headers, copyright footers, letterheads, or the primary entity the report is talking about. 
+        For example, if you see "Tata Motors Annual Report 2024", the company name is "Tata Motors".
+        
+        Provide the output as JSON matching this schema:
+        {{
+            "is_annual_report": true/false,
+            "company_match": true/false,  // Set true if you confidently deduce the company from context clues, even without an explicit label or target.
+            "detected_company": "Name of the company found/deduced in text",
+            "fiscal_year": "e.g., 2023-24 or 2024",
+            "confidence": 0.0 to 1.0,
+            "reason": "Brief explanation"
+        }}
+        """
 
 
 
@@ -23,7 +61,7 @@ class ValidationResult(BaseModel):
 class ReportValidator:
     """Validates downloaded PDF files to confirm they are the correct annual report."""
 
-    def __init__(self, llm_base_url: str = "http://localhost:8080"):
+    def __init__(self, llm_base_url: str = DEFAULT_LLM_URL):
         self.llm_base_url = llm_base_url
         # Use dummy API key for local server
         self.client = AsyncOpenAI(base_url=f"{self.llm_base_url}/v1", api_key="not-needed")
@@ -95,30 +133,7 @@ class ReportValidator:
         
         target_check = f'for the company "{company_name}"' if company_name else "and identify the company"
         
-        prompt = f"""
-        You are an expert financial document validator. Analyze the following text extracted from the first pages of a document.
-        
-        Text:
-        {text[:4000]}  # Limit text length just in case
-        
-        Determine if this document is an Annual Report {target_check}.
-        
-        CRITICAL INSTRUCTION FOR FINDING COMPANY NAME: 
-        The company name will rarely be explicitly labeled like "Company Name: XYZ". 
-        You must be smart and deduce the company name from context clues on the cover page or table of contents. 
-        Look for large headers, copyright footers, letterheads, or the primary entity the report is talking about. 
-        For example, if you see "Tata Motors Annual Report 2024", the company name is "Tata Motors".
-        
-        Provide the output as JSON matching this schema:
-        {{
-            "is_annual_report": true/false,
-            "company_match": true/false,  // Set true if you confidently deduce the company from context clues, even without an explicit label or target.
-            "detected_company": "Name of the company found/deduced in text",
-            "fiscal_year": "e.g., 2023-24 or 2024",
-            "confidence": 0.0 to 1.0,
-            "reason": "Brief explanation"
-        }}
-        """
+        prompt = _VALIDATION_USER_TEMPLATE.format(text=text[:4000], target_check=target_check)
 
         schema = {
             "type": "object",
@@ -134,22 +149,11 @@ class ReportValidator:
             "additionalProperties": False
         }
 
-        system_prompt = """You are a helpful assistant that outputs only valid JSON.
-Example output:
-{
-  "is_annual_report": true,
-  "company_match": true,
-  "detected_company": "Infosys Limited",
-  "fiscal_year": "2023-24",
-  "confidence": 0.95,
-  "reason": "The text clearly mentions 'Annual Report 2023-24' for 'Infosys'."
-}"""
-
         try:
             response = await self.client.chat.completions.create(
-                model="qwen",
+                model=LLM_MODEL,
                 messages=[
-                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": _VALIDATION_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
                 ],
                 response_format={"type": "json_schema", "json_schema": {"name": "validation", "schema": schema, "strict": True}},

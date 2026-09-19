@@ -11,7 +11,7 @@ from pipeline.parsing.parse import ParsedReport
 
 logger = logging.getLogger(__name__)
 
-__version__ = "1.0.0"
+
 
 
 class SectionContent(BaseModel):

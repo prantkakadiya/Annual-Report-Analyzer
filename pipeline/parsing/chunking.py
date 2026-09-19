@@ -11,7 +11,7 @@ from pipeline.schema import DocumentChunk
 
 logger = logging.getLogger(__name__)
 
-__version__ = "1.0.0"
+
 
 # Regex to detect page markers injected by the parser / section splitter.
 _PAGE_MARKER_RE = re.compile(r"<!--\s*PAGE\s+(\d+)\s*-->")

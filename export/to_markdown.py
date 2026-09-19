@@ -40,19 +40,19 @@ def export_markdown(result: AnalysisResult) -> str:
         # Financial Metrics
         lines.append("## Financial Metrics")
         if result.financial_data and result.financial_data.metrics:
+            def _fmt(v: float | None) -> str:
+                if v is None:
+                    return "—"
+                if v == int(v):
+                    return f"{int(v):,}"
+                return f"{v:,.2f}"
+
             lines.append(
                 "| Metric | CY Consolidated | CY Standalone "
                 "| PY Consolidated | PY Standalone | Unit | Page |"
             )
             lines.append("|---|---|---|---|---|---|---|")
             for m in result.financial_data.metrics:
-                def _fmt(v: float | None) -> str:
-                    if v is None:
-                        return "—"
-                    if v == int(v):
-                        return f"{int(v):,}"
-                    return f"{v:,.2f}"
-
                 lines.append(
                     f"| {m.name} "
                     f"| {_fmt(m.current_year_consolidated)} "

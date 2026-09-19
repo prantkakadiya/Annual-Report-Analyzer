@@ -14,7 +14,6 @@ from pipeline.schema import SearchCandidate
 
 logger = logging.getLogger(__name__)
 
-__version__ = "1.0.0"
 
 
 class ReportDownloader:
@@ -60,8 +59,6 @@ class ReportDownloader:
 
     async def _try_download(self, candidate: SearchCandidate, progress_callback=None) -> str | None:
         """Try direct download first if it looks like a PDF, fallback to Playwright browser download."""
-        from urllib.parse import urlparse
-        
         parsed_url = urlparse(candidate.url.strip())
         is_pdf_path = parsed_url.path.lower().endswith(".pdf")
         

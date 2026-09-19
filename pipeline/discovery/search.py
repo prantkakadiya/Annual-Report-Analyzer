@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-__version__ = "1.0.0"
+
 
 class ReportSearcher:
     """Searches for annual report PDFs using Tavily."""

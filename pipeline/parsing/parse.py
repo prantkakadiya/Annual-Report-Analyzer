@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-__version__ = "2.0.0"
+
 
 
 class PageContent(BaseModel):

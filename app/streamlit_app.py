@@ -421,29 +421,26 @@ def _render_financials_tab(result: AnalysisResult) -> None:
     st.markdown("---")
     st.markdown("### 📊 Detailed Financial Metrics")
     
-    import pandas as pd
+    def fmt(val):
+        if val is None:
+            return "—"
+        return f"{val:,.2f}"
+
     rows = []
     for m in metrics:
-        def fmt(val):
-            if val is None:
-                return "—"
-            return f"{val:,.2f}"
-            
         rows.append({
-            "Metric": f"**{m.name}**",
+            "Metric": m.name,
             "Unit": m.unit,
             "CY Consolidated": fmt(m.current_year_consolidated),
             "CY Standalone": fmt(m.current_year_standalone),
             "PY Consolidated": fmt(m.previous_year_consolidated),
             "PY Standalone": fmt(m.previous_year_standalone),
-            "Page": f"[p.{m.page_number}]" if m.page_number else "—",
+            "Page": f"p.{m.page_number}" if m.page_number else "—",
             "Notes": m.notes or "—",
         })
         
-    df = pd.DataFrame(rows)
-    
     st.dataframe(
-        df,
+        rows,
         use_container_width=True,
         hide_index=True,
         column_config={
@@ -627,11 +624,6 @@ def _render_chat() -> None:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-from contextlib import contextmanager
-import subprocess
-import time
-
-
 def main() -> None:
     _init_state()
 
@@ -654,10 +646,9 @@ def main() -> None:
 
         st.session_state.is_running = True
         try:
-            if True:
-                result = asyncio.run(
-                    _run_pipeline(company_name or None, pdf_path=tmp_path)
-                )
+            result = asyncio.run(
+                _run_pipeline(company_name or None, pdf_path=tmp_path)
+            )
             st.session_state.result = result
         except Exception as exc:
             logger.exception("Pipeline failed (upload)")
@@ -669,10 +660,9 @@ def main() -> None:
     elif run_clicked and company_name:
         st.session_state.is_running = True
         try:
-            if True:
-                result = asyncio.run(
-                    _run_pipeline(company_name)
-                )
+            result = asyncio.run(
+                _run_pipeline(company_name)
+            )
             st.session_state.result = result
         except Exception as exc:
             logger.exception("Pipeline failed (search)")

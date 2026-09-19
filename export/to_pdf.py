@@ -104,19 +104,19 @@ def export_pdf(result: AnalysisResult, output_path: str) -> str:
             pdf.set_font("Helvetica", "", 8)
             pdf.set_text_color(0, 0, 0)
 
+            def _fmt(v: float | None) -> str:
+                if v is None:
+                    return "—"
+                if v == int(v):
+                    return f"{int(v):,}"
+                return f"{v:,.2f}"
+
             for row_idx, m in enumerate(result.financial_data.metrics):
                 # Alternating row colour
                 if row_idx % 2 == 0:
                     pdf.set_fill_color(240, 240, 250)
                 else:
                     pdf.set_fill_color(255, 255, 255)
-
-                def _fmt(v: float | None) -> str:
-                    if v is None:
-                        return "—"
-                    if v == int(v):
-                        return f"{int(v):,}"
-                    return f"{v:,.2f}"
 
                 vals = [
                     m.name,

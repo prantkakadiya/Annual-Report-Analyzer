@@ -9,7 +9,7 @@ from pipeline.parsing.sections import SectionContent
 
 logger = logging.getLogger(__name__)
 
-__version__ = "1.0.0"
+
 
 class InsightGenerator:
     """Generates narrative insights using LLM."""

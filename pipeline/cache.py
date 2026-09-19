@@ -42,23 +42,15 @@ class ReportCache:
     
     def make_company_id(self, company_name: str, fiscal_year: str) -> str:
         """Creates a slugified company ID."""
-        try:
-            base = f"{company_name}_{fiscal_year}"
-            slug = re.sub(r'[^a-z0-9]+', '_', base.lower()).strip('_')
-            return slug
-        except Exception as e:
-            logger.exception("Error making company_id")
-            raise
+        base = f"{company_name}_{fiscal_year}"
+        slug = re.sub(r'[^a-z0-9]+', '_', base.lower()).strip('_')
+        return slug
 
     def get_company_data_dir(self, company_id: str) -> Path:
         """Returns the data directory path for a given company, creating it if needed."""
-        try:
-            path = self.data_dir / company_id
-            path.mkdir(parents=True, exist_ok=True)
-            return path
-        except Exception as e:
-            logger.exception(f"Error creating company data dir for {company_id}")
-            raise
+        path = self.data_dir / company_id
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
     def get_report(self, company_name: str, fiscal_year: str) -> AnalysisResult | None:
         """Returns cached report result or None if not found or corrupted."""

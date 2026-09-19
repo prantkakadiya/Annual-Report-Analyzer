@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-__version__ = "1.0.0"
+
 
 class ValidationResult(BaseModel):
     is_valid: bool

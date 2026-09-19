@@ -18,6 +18,8 @@ class FinancialMetric(BaseModel):
     previous_year_standalone: float | None = None
     unit: str = "INR Crore"
     page_number: int | None = None
+    evidence_start_line: int | None = None
+    evidence_end_line: int | None = None
     notes: str | None = None
 
     @field_validator(
@@ -102,5 +104,4 @@ class AnalysisResult(BaseModel):
     financial_data: FinancialData | None = None
     insights: InsightData | None = None
     sections_found: dict[str, bool] = {}
-    chat_history: list[ChatMessage] = []
     analysis_version: str = "1.0.0"

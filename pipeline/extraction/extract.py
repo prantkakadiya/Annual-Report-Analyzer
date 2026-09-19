@@ -11,7 +11,25 @@ from pipeline.model_manager import model_manager
 
 logger = logging.getLogger(__name__)
 
-__version__ = "3.0.0"
+
+
+PRIMARY_ALIASES = {
+    "Revenue": {"revenue", "revenue from operations", "total income", "gross revenue"},
+    "EBITDA": {"ebitda", "adjusted ebitda", "operating profit"},
+    "Net Profit": {"net profit", "profit for the year", "pat", "profit after tax", "loss for the year", "loss after tax"},
+    "EPS": {"eps", "earnings per share", "basic and diluted earnings per share"},
+    "Total Assets": {"total assets", "assets"},
+    "Total Liabilities": {"total liabilities", "liabilities"},
+    "Debt/Equity ratio": {"debt/equity ratio", "debt to equity", "debt equity ratio"},
+    "Cash Flow from Operations": {"cash flow from operations", "net cash from operating activities", "operating cash flow"},
+    "ROE": {"roe", "return on equity", "return on net worth"},
+    "ROCE": {"roce", "return on capital employed"}
+}
+
+def is_primary_submission(name: str, primary_metric: str) -> bool:
+    primary = primary_metric.split("(")[0].strip()
+    aliases = PRIMARY_ALIASES.get(primary, {primary.lower()})
+    return name.lower().strip() in aliases
 
 class FinancialExtractor:
     """Agentic Financial Extractor using Section Slicing and Tool Calling."""
@@ -58,9 +76,6 @@ class FinancialExtractor:
         
         model_manager.require_llm()
 
-        def _is_match(sub_name: str, full_desc: str) -> bool:
-            return sub_name.lower().strip() in full_desc.lower()
-
         while metrics_to_find:
             primary_metric = metrics_to_find[0]
             other_metrics = metrics_to_find[1:]
@@ -73,10 +88,10 @@ class FinancialExtractor:
             for fm in newly_found:
                 all_metrics[fm.name] = fm
                 # Remove newly found metric from our checklist
-                metrics_to_find = [m for m in metrics_to_find if not _is_match(fm.name, m)]
+                metrics_to_find = [m for m in metrics_to_find if not is_primary_submission(fm.name, m)]
                 
             # If the primary metric STILL wasn't found (it failed or gave up), we pop it so we don't infinite loop.
-            if metrics_to_find and _is_match(primary_metric.split("(")[0].strip(), metrics_to_find[0]):
+            if metrics_to_find and is_primary_submission(metrics_to_find[0].split("(")[0].strip(), primary_metric):
                 logger.warning(f"Could not extract {primary_metric}, giving up and moving to next.")
                 metrics_to_find.pop(0)
 
@@ -93,20 +108,17 @@ class FinancialExtractor:
                 "type": "function",
                 "function": {
                     "name": "search_lines",
-                    "description": "Search the report sections for a keyword. Returns matching lines along with 8 lines of context above and below, including exact line numbers.",
+                    "description": "Search the report for multiple keywords at once. Returns matching lines along with context (1-indexed line numbers).",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "thought": {
-                                "type": "string",
-                                "description": "A brief 1-sentence thought explaining why you are searching for this keyword."
-                            },
-                            "keyword": {
-                                "type": "string",
-                                "description": "The exact keyword or short/full phrase to search for."
+                            "keywords": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "List of exact keywords or short/full phrases to search for (e.g. ['Revenue', 'Total income'])."
                             }
                         },
-                        "required": ["thought", "keyword"]
+                        "required": ["keywords"]
                     }
                 }
             },
@@ -114,18 +126,14 @@ class FinancialExtractor:
                 "type": "function",
                 "function": {
                     "name": "read_lines",
-                    "description": "Read a specific range of lines from the document if you need to see more context beyond the 8 lines provided by search_lines.",
+                    "description": "Read a specific range of lines from the document (1-indexed). Maximum range: 250 lines.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "thought": {
-                                "type": "string",
-                                "description": "A brief 1-sentence thought explaining why you need to read these specific lines."
-                            },
-                            "start_line": {"type": "integer"},
-                            "end_line": {"type": "integer"}
+                            "start_line": {"type": "integer", "description": "1-indexed starting line number"},
+                            "end_line": {"type": "integer", "description": "1-indexed ending line number"}
                         },
-                        "required": ["thought", "start_line", "end_line"]
+                        "required": ["start_line", "end_line"]
                     }
                 }
             },
@@ -133,13 +141,14 @@ class FinancialExtractor:
                 "type": "function",
                 "function": {
                     "name": "submit_metric",
-                    "description": "Submit extracted data. You can call this MULTIPLE times in a row if you find multiple metrics!",
+                    "description": "Submit extracted data for a metric.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "thought": {
+                            "submission_type": {
                                 "type": "string",
-                                "description": "A brief 1-sentence thought explaining your confidence in this metric submission."
+                                "enum": ["primary", "secondary"],
+                                "description": "Whether you are submitting the primary target or an opportunistic secondary discovery."
                             },
                             "metric_name": {
                                 "type": "string", 
@@ -155,44 +164,77 @@ class FinancialExtractor:
                             "previous_year_consolidated": {"type": "string", "description": "Value for previous year (e.g., FY 2023-24). Extract exact string including commas. Leave empty if not found."},
                             "unit": {"type": "string", "description": "The unit of measurement (e.g. '` Million', '%')."},
                             "page_number": {"type": "integer", "description": "Page number where found. Leave empty if you cannot immediately see it. Do NOT waste turns searching for this."},
+                            "evidence_start_line": {"type": "integer", "description": "The starting line number (1-indexed) of the evidence table/text."},
+                            "evidence_end_line": {"type": "integer", "description": "The ending line number (1-indexed) of the evidence table/text."},
                             "notes": {"type": "string", "description": "Any context or notes."}
                         },
-                        "required": ["thought", "metric_name"]
+                        "required": ["submission_type", "metric_name", "evidence_start_line", "evidence_end_line"]
                     }
                 }
             }
         ]
 
         missing_text = "\n".join([f"- {m}" for m in other_metrics])
+        
+        system_prompt = """You are a financial-document extraction agent.
+You are given a text representation of a financial report. The document has numbered lines.
+Your job is to extract ONE PRIMARY METRIC requested by the controller.
+You have access to document-search and document-reading tools. You do not have access to the internet and must rely only on the supplied document.
+
+EVIDENCE
+Only submit a metric when the document provides sufficient evidence.
+Verify, whenever possible: metric name, reporting period, values, unit, and consolidated context.
+Do not guess. Do not calculate a value unless explicitly required.
+Extract values exactly as shown (do not convert units).
+Extract CONSOLIDATED data only unless specified otherwise.
+
+SEARCHING & READING
+- Start with likely exact terms and useful aliases (e.g., for Net Profit, search ['Net profit', 'Profit for the year', 'PAT']).
+- Use the smallest number of searches necessary.
+- Use `read_lines` when the search result does not contain enough context (max 250 lines).
+
+SUBMISSION
+- Use `submit_metric` to submit findings. Include exact line ranges for evidence provenance.
+- Do not waste tool calls searching for page numbers.
+
+BEHAVIOR
+Be focused and economical. Do not explore the document generally.
+Do not produce a final natural-language answer. Continue using tools until the primary metric is submitted or the search is exhausted.
+FIND → VERIFY → SUBMIT THE PRIMARY TARGET → STOP."""
+
+        user_prompt = f"""Company: {company_name}
+Fiscal year: {fiscal_year}
+
+PRIMARY TARGET:
+{primary_metric}
+
+Your highest-priority objective is to find reliable evidence for this metric and submit it as submission_type: "primary".
+The task is complete as soon as the PRIMARY TARGET has been successfully submitted.
+
+PRIORITY:
+1. Find the PRIMARY TARGET.
+2. While searching for the PRIMARY TARGET, opportunistically submit other requested metrics if they appear in the same evidence you are already examining (as submission_type: "secondary").
+3. Never search specifically for secondary metrics.
+4. Never continue searching after the PRIMARY TARGET has been successfully submitted.
+
+WHAT COUNTS AS AN OPPORTUNISTIC DISCOVERY:
+If the PRIMARY TARGET is Revenue, and you find a table containing Revenue, EBITDA, and Profit After Tax, you may submit all three because they were found in the same evidence.
+However, if Revenue is not found, you must NOT start searching separately for EBITDA or Profit After Tax.
+
+Other metrics that may be submitted ONLY if naturally encountered while completing the primary target:
+{missing_text}
+
+Begin by searching the document for the primary target."""
+
         messages = [
-            {
-                "role": "system",
-                "content": "You are an autonomous financial auditor."
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Your PRIMARY goal right now is to extract this exact metric for {company_name} ({fiscal_year}):\n"
-                    f"**{primary_metric}**\n\n"
-                    f"OPPORTUNISTIC EXTRACTION:\n"
-                    f"While searching, if you happen to see the data for ANY of these other missing metrics, you MUST submit them too:\n"
-                    f"{missing_text}\n\n"
-                    "RULES:\n"
-                    "1. Use `search_lines` to explore. Try short forms (e.g., 'ROE', 'PAT') and full forms.\n"
-                    "2. If a table gets cut off, use `read_lines`.\n"
-                    "3. MULTIPLE METRICS: Financial tables often group Revenue, EBITDA, and Profit together. If you see multiple metrics in the same table, you MUST submit ALL of them in a single response using parallel `submit_metric` calls!\n"
-                    "4. IMMEDIATELY use `submit_metric` when you find numbers. Page numbers are OPTIONAL. Leave them empty if not immediately visible. NEVER waste turns searching for page numbers!\n"
-                    "5. ONLY extract the main Consolidated data. DO NOT search for standalone data.\n"
-                    "6. Do NOT convert units. Write exactly as seen (e.g. '` Million').\n"
-                    "7. You MUST always call a tool. Do NOT reply with conversational text outside of a tool call."
-                )
-            }
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
         ]
 
         extracted = []
         primary_found = False
         
-        for turn in range(10):
+        for turn in range(12):
             try:
                 response = await self.client.chat.completions.create(
                     model="qwen",
@@ -208,37 +250,47 @@ class FinancialExtractor:
                     if log_callback: log_callback(f"🧠 Thought: {msg.content.strip()}")
                 
                 if not msg.tool_calls:
-                    if log_callback: log_callback("❌ Error: Agent stopped calling tools and gave up early.")
-                    logger.error("The model stopped calling tools and gave up early.")
+                    if log_callback: log_callback("ℹ️ Agent stopped calling tools.")
+                    logger.info("The model stopped calling tools.")
                     break
                     
                 for tc in msg.tool_calls:
                     args = json.loads(tc.function.arguments)
-                    thought = args.pop("thought", None)
-                    
-                    if thought and log_callback:
-                        log_callback(f"🧠 Thought: {thought}")
                         
                     if tc.function.name == "search_lines":
-                        keyword = args.get("keyword", "").strip()
-                        if log_callback: log_callback(f"🔎 Searching: `{keyword}`")
-                        logger.info(f"Agent searching keyword: '{keyword}'")
+                        keywords = args.get("keywords", [])
+                        if not keywords:
+                            keywords = [args.get("keyword", "")]
+                            
+                        search_display = ", ".join(f"`{k}`" for k in keywords if k)
+                        if log_callback: log_callback(f"🔎 Searching: {search_display}")
+                        logger.info(f"Agent searching keywords: {keywords}")
                         
                         results = []
-                        if keyword:
+                        for kw in keywords:
+                            if not kw: continue
                             for i, line in enumerate(full_lines):
-                                if keyword.lower() in line.lower():
+                                if kw.lower() in line.lower():
                                     start = max(0, i - 8)
                                     end = min(len(full_lines), i + 9)
-                                    snippet_lines = [f"[Line {idx}] {full_lines[idx]}" for idx in range(start, end)]
+                                    # 1-indexed lines for LLM
+                                    snippet_lines = [f"[Line {idx + 1}] {full_lines[idx]}" for idx in range(start, end)]
                                     snippet = "\n".join(snippet_lines)
                                     if not any(snippet in r for r in results):
                                         results.append(snippet)
                         
                         if not results:
-                            tool_result = f"No matches found for '{keyword}'. Try a different keyword."
+                            tool_result = f"No matches found for {keywords}. Try different keywords."
                         else:
-                            tool_result = f"Found {len(results)} matches. Showing top 3:\n\n" + "\n\n---\n\n".join(results[:3])
+                            total_matches = len(results)
+                            display_count = min(3, total_matches)
+                            tool_result = f"Found {total_matches} matches. "
+                            if total_matches > display_count:
+                                tool_result += f"Showing Matches 1-{display_count}. There are {total_matches - display_count} additional matches not shown.\n\n"
+                            else:
+                                tool_result += f"Showing all matches:\n\n"
+                                
+                            tool_result += "\n\n---\n\n".join(results[:display_count])
                         
                         if log_callback: log_callback(f"📄 Tool Output:\n{tool_result}\n")
                         
@@ -249,16 +301,24 @@ class FinancialExtractor:
                         })
                         
                     elif tc.function.name == "read_lines":
-                        start_line = max(0, args.get("start_line", 0))
-                        end_line = min(len(full_lines), args.get("end_line", 0) + 1)
-                        if log_callback: log_callback(f"📖 Reading Lines: {start_line} to {end_line}")
-                        logger.info(f"Agent reading lines {start_line} to {end_line}")
+                        start_line = args.get("start_line", 1)
+                        end_line = args.get("end_line", 1)
                         
-                        if start_line >= end_line:
-                            tool_result = "Invalid line range. start_line must be less than end_line."
+                        if end_line - start_line > 250:
+                            tool_result = "Error: Range too large. Maximum allowed range is 250 lines. Please request a smaller range."
                         else:
-                            snippet_lines = [f"[Line {idx}] {full_lines[idx]}" for idx in range(start_line, end_line)]
-                            tool_result = "\n".join(snippet_lines)
+                            # Convert 1-indexed LLM requests to 0-indexed internal arrays
+                            start_idx = max(0, start_line - 1)
+                            end_idx = min(len(full_lines), end_line)
+                            
+                            if log_callback: log_callback(f"📖 Reading Lines: {start_idx + 1} to {end_idx}")
+                            logger.info(f"Agent reading lines {start_idx + 1} to {end_idx}")
+                            
+                            if start_idx >= end_idx:
+                                tool_result = "Invalid line range. start_line must be less than end_line."
+                            else:
+                                snippet_lines = [f"[Line {idx + 1}] {full_lines[idx]}" for idx in range(start_idx, end_idx)]
+                                tool_result = "\n".join(snippet_lines)
                             
                         if log_callback: log_callback(f"📄 Tool Output:\n{tool_result}\n")
                             
@@ -270,17 +330,16 @@ class FinancialExtractor:
                         
                     elif tc.function.name == "submit_metric":
                         try:
-                            # Use the metric_name provided by the LLM
+                            sub_type = args.pop("submission_type", "secondary")
                             name = args.pop("metric_name", primary_metric.split("(")[0].strip())
                             args["name"] = name
                             extracted.append(FinancialMetric(**args))
                             
-                            if log_callback: log_callback(f"✅ Extracted: {name}")
+                            if log_callback: log_callback(f"✅ Extracted ({sub_type}): {name}")
                             logger.info(f"✅ Agent dynamically submitted metric: {name}")
                             
-                            # Check if the primary target was found
-                            base_primary = primary_metric.split("(")[0].strip().lower()
-                            if base_primary in name.lower() or name.lower() in base_primary:
+                            # Only break if the primary target was submitted explicitly
+                            if sub_type == "primary" and is_primary_submission(name, primary_metric):
                                 primary_found = True
                         except Exception as e:
                             logger.error(f"Failed to parse submitted metric: {e}")
@@ -288,10 +347,10 @@ class FinancialExtractor:
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tc.id,
-                            "content": "Metric submitted successfully. You can continue searching or exit if finished."
+                            "content": "Metric submitted successfully."
                         })
                 
-                # If we submitted the primary goal, we can end this session early!
+                # We process ALL tool calls in the turn before stopping.
                 if primary_found:
                     break
                     
@@ -301,30 +360,3 @@ class FinancialExtractor:
                 break
                 
         return extracted
-
-    def _get_json_schema(self) -> dict:
-        return {
-            "type": "object",
-            "properties": {
-                "metrics": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string"},
-                            "current_year_consolidated": {"type": ["number", "null"]},
-                            "current_year_standalone": {"type": ["number", "null"]},
-                            "previous_year_consolidated": {"type": ["number", "null"]},
-                            "previous_year_standalone": {"type": ["number", "null"]},
-                            "unit": {"type": "string"},
-                            "page_number": {"type": ["integer", "null"]},
-                            "notes": {"type": ["string", "null"]}
-                        },
-                        "required": ["name", "unit", "current_year_consolidated", "current_year_standalone", "previous_year_consolidated", "previous_year_standalone", "page_number", "notes"],
-                        "additionalProperties": False
-                    }
-                }
-            },
-            "required": ["metrics"],
-            "additionalProperties": False
-        }

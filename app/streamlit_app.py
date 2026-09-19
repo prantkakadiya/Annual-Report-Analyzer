@@ -253,7 +253,11 @@ async def _run_pipeline(
     status_area.write("  ⚙️ Swapping Embedding Model for LLM in VRAM...")
     model_manager.require_llm()
     extractor = FinancialExtractor(llm_base_url=LLM_BASE_URL)
-    financial_data = await extractor.extract(sections, company_name, fiscal_year)
+    
+    def extraction_logger(msg: str):
+        status_area.write(f"    {msg}")
+        
+    financial_data = await extractor.extract(sections, company_name, fiscal_year, log_callback=extraction_logger)
     status_area.write(f"  💰 {len(financial_data.metrics)} metrics extracted")
 
     # ── Insight generation

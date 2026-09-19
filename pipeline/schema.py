@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +19,25 @@ class FinancialMetric(BaseModel):
     unit: str = "INR Crore"
     page_number: int | None = None
     notes: str | None = None
+
+    @field_validator(
+        "current_year_consolidated", 
+        "current_year_standalone", 
+        "previous_year_consolidated", 
+        "previous_year_standalone", 
+        mode="before"
+    )
+    @classmethod
+    def parse_number(cls, v: Any) -> float | None:
+        if isinstance(v, str):
+            v = v.replace(",", "").strip()
+            if not v or v.lower() in ("none", "null", "-", "nil"):
+                return None
+            try:
+                return float(v)
+            except ValueError:
+                return None
+        return v
 
 class FinancialData(BaseModel):
     """All extracted financial metrics for a report."""

@@ -53,10 +53,10 @@ class RAGIndex:
         )
 
         texts = [c.text for c in chunks]
-        embeddings = await self.embed_texts(texts, progress_callback=progress_callback)
+        embeddings = await self.embed_texts(texts, progress_callback=progress_callback, company_id=company_id)
 
-        if not embeddings:
-            logger.error("No embeddings returned – cannot build index")
+        if not embeddings or len(embeddings) != len(chunks):
+            logger.error("Embeddings incomplete – cannot build index")
             return
 
         for chunk, emb in zip(chunks, embeddings):
@@ -79,8 +79,15 @@ class RAGIndex:
             try:
                 self.cache.save_faiss_index(company_id, self.index)
                 self.cache.save_chunks(company_id, chunks)
+                
+                # Cleanup checkpoint since we are done
+                from pipeline.config import DATA_DIR
+                from pathlib import Path
+                ckpt = Path(DATA_DIR) / "cache" / f"{company_id}_embeddings_ckpt.json"
+                if ckpt.exists():
+                    ckpt.unlink()
             except Exception:
-                logger.exception("Failed to persist index/chunks to cache")
+                logger.exception("Failed to save FAISS cache")
 
     def load_index(self, company_id: str) -> bool:
         """Try to load a previously built index from cache.
@@ -114,7 +121,8 @@ class RAGIndex:
     # ------------------------------------------------------------------
 
     async def embed_texts(
-        self, texts: list[str], batch_size: int = 32, progress_callback: Callable[[int, int], None] | None = None
+        self, texts: list[str], batch_size: int = 15, progress_callback: Callable[[int, int], None] | None = None,
+        company_id: str | None = None
     ) -> list[list[float]]:
         """Embed a list of texts via the local embedding server.
 
@@ -122,30 +130,68 @@ class RAGIndex:
             texts: Strings to embed.
             batch_size: Number of texts per API call.
             progress_callback: Optional callable for reporting progress.
+            company_id: Optional ID to enable checkpoint saving.
 
         Returns:
             List of embedding vectors (same order as *texts*).
         """
-        logger.info("Embedding %d texts in batches of %d", len(texts), batch_size)
+        import json
+        from pathlib import Path
+        from pipeline.config import DATA_DIR
+        
+        checkpoint_file = None
+        if company_id:
+            checkpoint_dir = Path(DATA_DIR) / "cache"
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            checkpoint_file = checkpoint_dir / f"{company_id}_embeddings_ckpt.json"
+            
         all_embeddings: list[list[float]] = []
+        start_idx = 0
         total_texts = len(texts)
+        
+        if checkpoint_file and checkpoint_file.exists():
+            try:
+                with open(checkpoint_file, "r") as f:
+                    all_embeddings = json.load(f)
+                start_idx = len(all_embeddings)
+                logger.info("Loaded %d embeddings from checkpoint. Resuming...", start_idx)
+                if progress_callback and start_idx > 0:
+                    progress_callback(min(start_idx, total_texts), total_texts)
+            except Exception as e:
+                logger.warning("Failed to load embedding checkpoint: %s", e)
+                all_embeddings = []
+                start_idx = 0
 
-        for i in range(0, total_texts, batch_size):
+        if start_idx >= total_texts:
+            return all_embeddings[:total_texts]
+
+        logger.info("Embedding %d remaining texts in batches of %d", total_texts - start_idx, batch_size)
+
+        for i in range(start_idx, total_texts, batch_size):
             batch = texts[i : i + batch_size]
+            
+            # TRUNCATE: Since we confirmed the computer runs out of memory on huge chunks,
+            # we must slice anomalous chunks down to ~4,000 tokens so it survives.
+            safe_batch = [text[:16000] for text in batch]
+            
             try:
                 response = await self.embed_client.embeddings.create(
                     model=EMBEDDING_MODEL,
-                    input=batch,
+                    input=safe_batch,
                 )
                 batch_embs = [d.embedding for d in response.data]
                 all_embeddings.extend(batch_embs)
+                
+                # Save checkpoint immediately
+                if checkpoint_file:
+                    with open(checkpoint_file, "w") as f:
+                        json.dump(all_embeddings, f)
+                        
                 logger.debug("Embedded batch %d/%d", i // batch_size + 1,
                              (total_texts + batch_size - 1) // batch_size)
-            except Exception:
-                logger.exception("Error embedding batch starting at index %d", i)
-                # Pad with zeros so indices stay aligned.
-                dummy_dim = len(all_embeddings[0]) if all_embeddings else 1024
-                all_embeddings.extend([[0.0] * dummy_dim] * len(batch))
+            except Exception as e:
+                logger.exception("CRITICAL: Error embedding batch starting at index %d. Stopping to preserve progress.", i)
+                raise e # Stop execution so we don't pad zeros, allowing a safe resume later!
 
             if progress_callback:
                 progress_callback(min(i + batch_size, total_texts), total_texts)

@@ -29,4 +29,7 @@ fi
 echo "Starting Embedding server with model: $MODEL"
 echo "Using llama-server: $LLAMA_SERVER"
 
-exec "$LLAMA_SERVER" -m "$MODEL" -ngl 999 --embedding --port 8081
+# -np 1                : single slot — only one request at a time
+# -c 8192              : 8K context (safely fits 16,000 char chunks which can hit ~4200 tokens)
+# --no-cache-prompt    : disable prompt cache to prevent monotonic RAM growth across batches
+exec "$LLAMA_SERVER" -m "$MODEL" -ngl 999 --embedding -c 8192 -b 512 -np 1 --no-cache-prompt -fa on --port 8081

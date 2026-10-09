@@ -121,7 +121,7 @@ class RAGIndex:
     # ------------------------------------------------------------------
 
     async def embed_texts(
-        self, texts: list[str], batch_size: int = 15, progress_callback: Callable[[int, int], None] | None = None,
+        self, texts: list[str], batch_size: int = 30, progress_callback: Callable[[int, int], None] | None = None,
         company_id: str | None = None
     ) -> list[list[float]]:
         """Embed a list of texts via the local embedding server.

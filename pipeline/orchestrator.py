@@ -51,6 +51,14 @@ class PipelineCallbacks:
 # Orchestrator
 # ---------------------------------------------------------------------------
 
+def _run_parsing_subprocess(pdf_path: str) -> str:
+    """Runs Docling parsing in an isolated process to prevent PyTorch from permanently reserving RAM."""
+    from pipeline.parsing.parse import ReportParser
+    parser = ReportParser()
+    parsed = parser.parse(pdf_path)
+    return parsed.model_dump_json()
+
+
 class PipelineOrchestrator:
     """Runs the full analysis pipeline independent of any UI framework.
 
@@ -174,21 +182,21 @@ class PipelineOrchestrator:
         if cb.on_status:
             cb.on_status("⚙️ Unloading LLM to free VRAM for Docling OCR...")
         model_manager.stop_all()
-        parser = ReportParser()
-        parsed = parser.parse(pdf_path)
-
-        # Clear Docling / PyTorch from VRAM
+        # Run parsing in an isolated subprocess so PyTorch RAM is 100% destroyed on exit
         if cb.on_status:
-            cb.on_status("⚙️ Clearing Docling from VRAM...")
-        del parser
-        gc.collect()
-        try:
-            import torch
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except ImportError:
-            pass
+            cb.on_status("⚙️ Booting isolated parsing process to protect RAM...")
+            
+        import concurrent.futures
+        import multiprocessing as mp
+        from pipeline.parsing.parse import ParsedReport
+        
+        # We must use 'spawn' to ensure no memory is inherited from parent
+        ctx = mp.get_context("spawn")
+        with concurrent.futures.ProcessPoolExecutor(max_workers=1, mp_context=ctx) as executor:
+            future = executor.submit(_run_parsing_subprocess, pdf_path)
+            parsed_json = future.result()
+            
+        parsed = ParsedReport.model_validate_json(parsed_json)
 
         if cb.on_status:
             cb.on_status(f"📄 {parsed.total_pages} pages extracted")
@@ -220,19 +228,27 @@ class PipelineOrchestrator:
         standard_names = [
             "MD&A",
             "Directors' Report",
+            "Risk Management",
+            "Outlook & Guidance",
+            "Chairman/CEO Letter",
             "Balance Sheet",
             "Statement of Profit & Loss",
             "Cash Flow Statement",
             "Notes to Accounts",
-            "Corporate Governance Report",
-            "Auditor's Report",
+            "Corporate Governance Report"
         ]
         sections_found = {name: (name in sections) for name in standard_names}
+        
         if cb.on_status:
-            cb.on_status(
-                f"📑 {sum(sections_found.values())}/{len(sections_found)} "
-                "standard sections found"
-            )
+            cb.on_status(f"📑 {sum(sections_found.values())}/{len(sections_found)} standard sections found")
+            cb.on_status("\n--- SECTION SUMMARY ---")
+            for name, found in sections_found.items():
+                if found:
+                    method = sections[name].found_by if hasattr(sections[name], 'found_by') else "regex"
+                    cb.on_status(f"✅ FOUND: {name} (via {method})")
+                else:
+                    cb.on_status(f"❌ MISSING: {name}")
+            cb.on_status("-----------------------")
 
         # ── Financial extraction ───────────────────────────────────
         _advance("Extracting financial metrics…")
@@ -241,7 +257,8 @@ class PipelineOrchestrator:
         model_manager.require_llm()
         extractor = FinancialExtractor(llm_base_url=LLM_BASE_URL)
 
-        extraction_logger = cb.on_status if cb.on_status else None
+        # Route verbose extraction logs to the background logger, not the UI
+        extraction_logger = logger.info
         financial_data = await extractor.extract(
             sections, company_name, fiscal_year, log_callback=extraction_logger
         )
@@ -252,7 +269,7 @@ class PipelineOrchestrator:
         _advance("Generating business insights…")
         insight_gen = InsightGenerator(llm_base_url=LLM_BASE_URL)
         insights = await insight_gen.generate(
-            sections, company_name, fiscal_year
+            sections, company_name, fiscal_year, financial_data
         )
         if cb.on_status:
             cb.on_status(f"💡 {len(insights.insights)} insights generated")

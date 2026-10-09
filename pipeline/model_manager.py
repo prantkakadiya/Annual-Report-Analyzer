@@ -85,12 +85,15 @@ class ModelManager:
             self._stop_process(self.emb_process, "Embedding")
             self.emb_process = None
 
+        PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        llm_server_dir = os.path.join(PROJECT_ROOT, "llm_server")
+        
         logger.info("Starting LLM server...")
         self.llm_process = subprocess.Popen(
-            [os.path.abspath("llm_server/start_server.sh")],
+            [os.path.join(llm_server_dir, "start_server.sh")],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            cwd=os.path.abspath("llm_server"),
+            cwd=llm_server_dir,
             preexec_fn=os.setsid,
         )
         self.active_model = "llm"
@@ -99,6 +102,40 @@ class ModelManager:
             logger.info("LLM server is ready.")
         else:
             logger.warning("LLM server did not report ready in time.")
+
+    def require_vision(self) -> None:
+        if (
+            self.active_model == "vision"
+            and self.llm_process
+            and self.llm_process.poll() is None
+        ):
+            return
+
+        if self.emb_process:
+            self._stop_process(self.emb_process, "Embedding")
+            self.emb_process = None
+
+        if self.llm_process:
+            self._stop_process(self.llm_process, "LLM")
+            self.llm_process = None
+
+        PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        llm_server_dir = os.path.join(PROJECT_ROOT, "llm_server")
+        
+        logger.info("Starting Vision LLM server (with mmproj)...")
+        self.llm_process = subprocess.Popen(
+            [os.path.join(llm_server_dir, "start_vision_server.sh")],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            cwd=llm_server_dir,
+            preexec_fn=os.setsid,
+        )
+        self.active_model = "vision"
+
+        if self._wait_for_port(8080, timeout=120):
+            logger.info("Vision LLM server is ready.")
+        else:
+            logger.warning("Vision LLM server did not report ready in time.")
 
     def require_embedding(self) -> None:
         if (
@@ -112,12 +149,15 @@ class ModelManager:
             self._stop_process(self.llm_process, "LLM")
             self.llm_process = None
 
+        PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        llm_server_dir = os.path.join(PROJECT_ROOT, "llm_server")
+
         logger.info("Starting Embedding server...")
         self.emb_process = subprocess.Popen(
-            [os.path.abspath("llm_server/start_embedding_server.sh")],
+            [os.path.join(llm_server_dir, "start_embedding_server.sh")],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            cwd=os.path.abspath("llm_server"),
+            cwd=llm_server_dir,
             preexec_fn=os.setsid,
         )
         self.active_model = "embedding"

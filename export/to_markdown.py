@@ -83,13 +83,7 @@ def export_markdown(result: AnalysisResult) -> str:
             lines.append("_No insights generated._")
         lines.append("")
 
-        # Sections found
-        if result.sections_found:
-            lines.append("## Sections Detected")
-            for sec, found in result.sections_found.items():
-                status = "✅" if found else "❌"
-                lines.append(f"- {status} {sec}")
-            lines.append("")
+
 
         # Footer
         lines.append("---")

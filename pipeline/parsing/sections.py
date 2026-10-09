@@ -61,8 +61,14 @@ _SECTION_PATTERNS: dict[str, list[re.Pattern[str]]] = {
     "Corporate Governance Report": [
         re.compile(r"(?im)^\s*#*\s*CORPORATE\s+GOVERNANCE(?:\s+REPORT)?\b"),
     ],
-    "Auditor's Report": [
-        re.compile(r"(?im)^\s*#*\s*(?:INDEPENDENT\s+)?AUDITORS?['\u2019]?\s+REPORT\b"),
+    "Risk Management": [
+        re.compile(r"(?im)^\s*#*\s*(?:RISK\s+MANAGEMENT|ENTERPRISE\s+RISK(?:S)?|RISKS\s+(?:AND|&)\s+CONCERNS|KEY\s+RISKS)\b"),
+    ],
+    "Outlook & Guidance": [
+        re.compile(r"(?im)^\s*#*\s*(?:OUTLOOK|BUSINESS\s+OUTLOOK|FUTURE\s+OUTLOOK|FUTURE\s+PROSPECTS)\b"),
+    ],
+    "Chairman/CEO Letter": [
+        re.compile(r"(?im)^\s*#*\s*(?:LETTER\s+TO\s+(?:THE\s+)?SHAREHOLDERS|CHAIRMAN['\u2019]S?\s+(?:LETTER|MESSAGE|STATEMENT)|MESSAGE\s+FROM\s+(?:THE\s+)?(?:CEO|CHAIRMAN|MANAGING\s+DIRECTOR))\b"),
     ],
 }
 
@@ -220,7 +226,7 @@ class SectionSplitter:
                 # Merge chunk texts, derive page range.
                 all_pages: set[int] = set()
                 text_parts: list[str] = []
-                for c in chunks:
+                for c, score in chunks:
                     all_pages.update(c.page_numbers)
                     text_parts.append(c.text)
 

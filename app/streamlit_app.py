@@ -267,55 +267,93 @@ def _render_financials_tab(result: AnalysisResult) -> None:
 
     metrics = result.financial_data.metrics
 
-    # KPI cards
-    def get_kpi(name_keywords: list[str]) -> str:
+    # KPI cards helper
+    def get_kpi(name_keywords: list[str], is_percent: bool = False) -> str:
         for m in metrics:
             if any(k.lower() in m.name.lower() for k in name_keywords):
                 val = m.current_year_consolidated or m.current_year_standalone
                 if val is not None:
+                    if is_percent or "%" in m.name:
+                        return f"{val:,.2f}%"
                     return f"{val:,.1f} {m.unit}"
         return "—"
 
     rev = get_kpi(["revenue", "total income"])
     ebitda = get_kpi(["ebitda"])
-    pat = get_kpi(["profit", "pat"])
+    pat = get_kpi(["profit", "pat", "net income"])
+    assets = get_kpi(["total assets"])
+    equity = get_kpi(["total equity"])
+    fcf = get_kpi(["free cash flow", "fcf"])
+    net_margin = get_kpi(["net margin"], True)
 
     st.markdown("### 🏆 Key Highlights (Current Year)")
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Revenue", rev)
     c2.metric("EBITDA", ebitda)
     c3.metric("Net Profit (PAT)", pat)
+    c4.metric("Net Margin", net_margin)
+    
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("Total Assets", assets)
+    c6.metric("Total Equity", equity)
+    c7.metric("Free Cash Flow", fcf)
+    c8.metric("EPS", get_kpi(["eps", "earnings per share"]))
 
     st.markdown("---")
-    st.markdown("### 📊 Detailed Financial Metrics")
 
     def fmt(val: float | None) -> str:
         if val is None:
             return "—"
         return f"{val:,.2f}"
 
-    rows = []
-    for m in metrics:
-        rows.append({
-            "Metric": m.name,
-            "Unit": m.unit,
-            "CY Consolidated": fmt(m.current_year_consolidated),
-            "CY Standalone": fmt(m.current_year_standalone),
-            "PY Consolidated": fmt(m.previous_year_consolidated),
-            "PY Standalone": fmt(m.previous_year_standalone),
-            "Page": f"p.{m.page_number}" if m.page_number else "—",
-            "Notes": m.notes or "—",
-        })
+    def render_metric_group(title: str, keywords: list[str]):
+        group_rows = []
+        for m in metrics:
+            if any(k.lower() in m.name.lower() for k in keywords):
+                group_rows.append({
+                    "Metric": m.name,
+                    "Unit": m.unit,
+                    "CY Consolidated": fmt(m.current_year_consolidated),
+                    "CY Standalone": fmt(m.current_year_standalone),
+                    "PY Consolidated": fmt(m.previous_year_consolidated),
+                    "PY Standalone": fmt(m.previous_year_standalone),
+                    "Notes": m.notes or "—",
+                })
+        
+        if group_rows:
+            st.markdown(f"#### {title}")
+            st.dataframe(
+                group_rows, 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={
+                    "Metric": st.column_config.TextColumn(width="medium"),
+                    "Notes": st.column_config.TextColumn(width="large"),
+                }
+            )
 
-    st.dataframe(
-        rows,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Metric": st.column_config.TextColumn(width="medium"),
-            "Notes": st.column_config.TextColumn(width="large"),
-        },
-    )
+    # Define groupings
+    income_kws = ["revenue", "gross profit", "operating income", "ebitda", "net profit", "earnings per share", "eps"]
+    balance_kws = ["total assets", "total liabilities", "total equity", "cash & equivalents", "total debt", "borrowings"]
+    cash_kws = ["operating cash flow", "investing cash flow", "financing cash flow", "free cash flow", "fcf"]
+    ratio_kws = ["margin", "return", "roe", "roa", "debt-to-equity", "eps growth", "ratio"]
+    
+    # Track which ones we grouped to catch any others
+    grouped_names = []
+    for kws in [income_kws, balance_kws, cash_kws, ratio_kws]:
+        for m in metrics:
+            if any(k.lower() in m.name.lower() for k in kws):
+                grouped_names.append(m.name)
+                
+    other_kws = [m.name for m in metrics if m.name not in grouped_names]
+
+    render_metric_group("📈 Income Statement", income_kws)
+    render_metric_group("⚖️ Balance Sheet", balance_kws)
+    render_metric_group("💸 Cash Flow", cash_kws)
+    render_metric_group("📊 Key Ratios", ratio_kws)
+    
+    if other_kws:
+        render_metric_group("📌 Other Metrics", other_kws)
 
 
 def _render_insights_tab(result: AnalysisResult) -> None:
@@ -344,11 +382,7 @@ def _render_info_tab(result: AnalysisResult) -> None:
         st.markdown(f"- **Analysed:** {meta.discovered_at.strftime('%Y-%m-%d %H:%M')}")
         st.markdown(f"- **Version:** {result.analysis_version}")
 
-    with col_b:
-        st.subheader("Sections Detected")
-        for sec, found in result.sections_found.items():
-            icon = "✅" if found else "❌"
-            st.markdown(f"- {icon} {sec}")
+
 
 
 def _render_results(result: AnalysisResult) -> None:
